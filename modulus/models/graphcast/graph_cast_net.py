@@ -142,14 +142,17 @@ class GraphCastNet(Module):
         do_concat_trick: bool = False,
         recompute_activation: bool = False,
         partition_size: int = 1,
-        partition_groups: List[dist.ProcessGrop] = None,
-
+        partition_groups: List[dist.ProcessGroup] = None,
     ):
         super().__init__(meta=MetaData())
 
         self.is_distributed = False
         if partition_size > 1:
-            assert use_cugraphops_decoder and use_cugraphops_encoder and use_cugraphops_processor, "Distributed Training only supported when cugraph-ops is used in all layers."
+            assert (
+                use_cugraphops_decoder
+                and use_cugraphops_encoder
+                and use_cugraphops_processor
+            ), "Distributed Training only supported when cugraph-ops is used in all layers."
             self.is_distributed = True
 
         # check the input resolution
@@ -204,10 +207,15 @@ class GraphCastNet(Module):
             )
             self.g2m_edata = self.g2m_edata[edge_ids]
             self.g2m_graph = CuGraphCSC(
-                offsets, indices, n_in_nodes, n_out_nodes, partition_size=partition_size, partition_groups=partition_groups,
+                offsets,
+                indices,
+                n_in_nodes,
+                n_out_nodes,
+                partition_size=partition_size,
+                partition_groups=partition_groups,
             )
-            if self.g2m_graph.is_distributed:
-                self.g2m_edata = self.g2m_graph.distribute_global_edge_features(self.g2m_edata)
+            if self.is_distributed:
+                self.g2m_edata = self.g2m_graph.get_local_edge_features(self.g2m_edata)
 
         if use_cugraphops_decoder:
             offsets, indices, edge_ids = self.m2g_graph.adj_sparse("csc")
@@ -217,10 +225,15 @@ class GraphCastNet(Module):
             )
             self.m2g_edata = self.m2g_edata[edge_ids]
             self.m2g_graph = CuGraphCSC(
-                offsets, indices, n_in_nodes, n_out_nodes, partition_size=partition_size, partition_groups=partition_groups,
+                offsets,
+                indices,
+                n_in_nodes,
+                n_out_nodes,
+                partition_size=partition_size,
+                partition_groups=partition_groups,
             )
-            if self.m2g_graph.is_distributed:
-                self.m2g_edata = self.m2g_edata.distribute_global_edge_features(self.m2g_edata)
+            if self.is_distributed:
+                self.m2g_edata = self.m2g_graph.get_local_edge_features(self.m2g_edata)
 
         if use_cugraphops_processor:
             offsets, indices, edge_ids = self.mesh_graph.adj_sparse("csc")
@@ -230,10 +243,20 @@ class GraphCastNet(Module):
             )
             self.mesh_edata = self.mesh_edata[edge_ids]
             self.mesh_graph = CuGraphCSC(
-                offsets, indices, n_in_nodes, n_out_nodes, partition_size=partition_size, partition_groups=partition_groups,
+                offsets,
+                indices,
+                n_in_nodes,
+                n_out_nodes,
+                partition_size=partition_size,
+                partition_groups=partition_groups,
             )
-            if self.mesh_graph.is_distributed:
-                self.mesh_edata = self.mesh_graph.distribute_global_edge_features(self.mesh_edata)
+            if self.is_distributed:
+                self.mesh_edata = self.mesh_graph.get_local_edge_features(
+                    self.mesh_edata
+                )
+                self.mesh_ndata = self.mesh_graph.get_local_dst_node_features(
+                    self.mesh_ndata
+                )
 
         # by default: don't checkpoint at all
         self.model_checkpoint_fn = set_checkpoint_fn(False)
@@ -619,7 +642,7 @@ class GraphCastNet(Module):
 
         if self.is_distributed:
             # partition node features
-            invar = self.g2m_graph.distribute_global_node_features(invar)
+            invar = self.g2m_graph.get_local_src_node_features(invar)
 
         return invar
 
@@ -636,12 +659,13 @@ class GraphCastNet(Module):
         Tensor
             The reshaped output of the model.
         """
+
+        if self.is_distributed:
+            outvar = self.m2g_graph.get_global_dst_node_features(outvar)
+
         outvar = outvar.permute(1, 0)
         outvar = outvar.view(self.output_dim_grid_nodes, *self.input_res)
         outvar = torch.unsqueeze(outvar, dim=0)
-
-        # note: outvar will be partitioned if distributed training is
-        # used, if this is undesired, one could add a consolidation step
 
         return outvar
 

@@ -12,15 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import time
+
 import torch
+import torch.distributed as dist
 from torch import Tensor
 from dgl import DGLGraph
 import dgl.function as fn
-from typing import Any, Callable, Dict, Optional, Union, Tuple
+from typing import Any, Callable, Dict, Optional, Union, Tuple, List
 from torch.utils.checkpoint import checkpoint
 
-from .distributed.distributed_graph import DistributedGraph
-from .distributed.distributed_gather import gather_scatter
+from modulus.distributed import DistributedGraph, all_to_all_idx_first_dim
 
 try:
     from pylibcugraphops.pytorch import StaticCSC, BipartiteCSC
@@ -66,6 +68,10 @@ class CuGraphCSC:
         Edges are partitioned such that each incoming edge is on the same rank
         as each node for which it represents the destination node. For message-passing,
         the corresponding features from source nodes need to be gathered.
+    partition_groups : List[dist.ProcessGroup], optional
+        list of necessary process groups needed for the distributed settings
+        as described above, needs to be passed if partition_size > 1, otherwise
+        it should be passed as None
     """
 
     def __init__(
@@ -78,6 +84,7 @@ class CuGraphCSC:
         reverse_graph_bwd: bool = True,
         cache_graph: bool = True,
         partition_size: int = 1,
+        partition_groups: List[dist.ProcessGroup] = None,
     ) -> None:
         self.offsets = offsets
         self.indices = indices
@@ -93,6 +100,7 @@ class CuGraphCSC:
         self.is_distributed = False
         self.dist_csc = None
         self.partition_size = partition_size
+        self.partition_groups = partition_groups
         self.distribute()
 
     def distribute(self):
@@ -100,19 +108,36 @@ class CuGraphCSC:
             self.is_distributed = False
             return
 
-        assert self.ef_indices is None, "DistributedGraph does not support mapping CSC-indices to COO-indices."
-        self.dist_graph = DistributedGraph(self.offsets, self.indices, self.partition_size)
+        assert (
+            self.ef_indices is None
+        ), "DistributedGraph does not support mapping CSC-indices to COO-indices."
+        self.dist_graph = DistributedGraph(
+            self.offsets, self.indices, self.partition_size, self.partition_groups
+        )
 
         self.offsets = self.dist_graph.local_offsets
         self.indices = self.dist_graph.local_indices
         self.num_src_nodes = self.dist_graph.num_local_src_nodes
         self.num_dst_nodes = self.dist_graph.num_local_dst_nodes
+        self.is_distributed = True
 
-    def distribute_global_node_features(self, nfeat: torch.Tensor) -> torch.Tensor:
-        return self.dist_graph.get_local_node_features(nfeat)
+    def get_local_src_node_features(self, global_nfeat: torch.Tensor) -> torch.Tensor:
+        return self.dist_graph.get_local_src_node_features(global_nfeat)
 
-    def distribute_global_edge_features(self, efeat: torch.Tensor) -> torch.Tensor:
-        return self.dist_graph.get_local_edge_features(efeat)
+    def get_local_dst_node_features(self, global_nfeat: torch.Tensor) -> torch.Tensor:
+        return self.dist_graph.get_local_dst_node_features(global_nfeat)
+
+    def get_local_edge_features(self, global_efeat: torch.Tensor) -> torch.Tensor:
+        return self.dist_graph.get_local_edge_features(global_efeat)
+
+    def get_global_src_node_features(self, local_nfeat: torch.Tensor) -> torch.Tensor:
+        return self.dist_graph.get_global_src_node_features(local_nfeat)
+
+    def get_global_dst_node_features(self, local_nfeat: torch.Tensor) -> torch.Tensor:
+        return self.dist_graph.get_global_dst_node_features(local_nfeat)
+
+    def get_global_edge_features(self, local_efeat: torch.Tensor) -> torch.Tensor:
+        return self.dist_graph.get_global_edge_features(local_efeat)
 
     def to(self, *args: Any, **kwargs: Any) -> "CuGraphCSC":
         """Moves the object to the specified device, dtype, or format and returns the
@@ -364,16 +389,12 @@ def concat_efeat(
     if isinstance(nfeat, Tensor):
         if isinstance(graph, CuGraphCSC):
             if graph.is_distributed:
-                src_feat = gather_scatter(nfeat, graph.dist_graph)
+                src_feat = all_to_all_idx_first_dim(nfeat, graph.dist_graph)
                 # torch.int64 to avoid indexing overflows due tu current behavior of cugraph-ops
                 bipartite_graph = graph.to_bipartite_csc(dtype=torch.int64)
                 dst_feat = nfeat
                 efeat = update_efeat_bipartite_e2e(
-                    efeat,
-                    src_feat,
-                    dst_feat,
-                    bipartite_graph,
-                    "concat"
+                    efeat, src_feat, dst_feat, bipartite_graph, "concat"
                 )
 
             else:
@@ -395,7 +416,7 @@ def concat_efeat(
         # update edge features through concatenating edge and node features
         if isinstance(graph, CuGraphCSC):
             if graph.is_distributed:
-                src_feat = gather_scatter(src_feat, graph.dist_graph)
+                src_feat = all_to_all_idx_first_dim(src_feat, graph.dist_graph)
             # torch.int64 to avoid indexing overflows due tu current behavior of cugraph-ops
             bipartite_graph = graph.to_bipartite_csc(dtype=torch.int64)
             efeat = update_efeat_bipartite_e2e(
@@ -460,14 +481,10 @@ def sum_efeat(
     if isinstance(nfeat, Tensor):
         if isinstance(graph, CuGraphCSC):
             if graph.is_distributed:
-                src_feat = gather_scatter(nfeat, graph.dist_graph)
+                src_feat = all_to_all_idx_first_dim(nfeat, graph.dist_graph)
                 bipartite_graph = graph.to_bipartite_csc()
                 sum_efeat = update_efeat_bipartite_e2e(
-                    efeat,
-                    src_feat,
-                    dst_feat,
-                    bipartite_graph,
-                    mode="sum"
+                    efeat, src_feat, dst_feat, bipartite_graph, mode="sum"
                 )
 
             else:
@@ -485,7 +502,8 @@ def sum_efeat(
         src_feat, dst_feat = nfeat
         if isinstance(graph, CuGraphCSC):
             if graph.is_distributed:
-                src_feat = gather_scatter(src_feat, graph.dist_graph)
+                src_feat = all_to_all_idx_first_dim(src_feat, graph.dist_graph)
+
             bipartite_graph = graph.to_bipartite_csc()
             sum_efeat = update_efeat_bipartite_e2e(
                 efeat, src_feat, dst_feat, bipartite_graph, mode="sum"
