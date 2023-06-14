@@ -101,9 +101,7 @@ class CuGraphCSC:
         self.dist_csc = None
         self.partition_size = partition_size
         self.partition_groups = partition_groups
-        self.distribute()
 
-    def distribute(self):
         if self.partition_size <= 1:
             self.is_distributed = False
             return
