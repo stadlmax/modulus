@@ -642,7 +642,7 @@ class GraphCastNet(Module):
 
         if self.is_distributed:
             # partition node features
-            invar = self.g2m_graph.get_local_src_node_features(invar)
+            invar = self.g2m_graph.get_partioned_local_src_node_features(invar)
 
         return invar
 

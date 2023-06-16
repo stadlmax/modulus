@@ -120,6 +120,8 @@ def test_distributed_graphcast(partition_size: int, dtype: torch.dtype):
     if dist.local_rank == 0:
         print(f"PASSED (partition_size: {partition_size}, dtype: {dtype})")
 
+    torch.distributed.barrier()
+
 
 if __name__ == "__main__":
     DistributedManager.initialize()

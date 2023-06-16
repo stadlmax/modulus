@@ -107,7 +107,9 @@ def test_distributed_meshgraphnet(partition_size: int, dtype: torch.dtype):
         device=device, dtype=dtype
     )
     nfeat_multi_gpu = nfeat_single_gpu.detach().clone()
-    nfeat_multi_gpu = graph_multi_gpu.get_local_src_node_features(nfeat_multi_gpu)
+    nfeat_multi_gpu = graph_multi_gpu.get_partioned_local_src_node_features(
+        nfeat_multi_gpu
+    )
     efeat_multi_gpu = efeat_single_gpu.detach().clone()
     efeat_multi_gpu = graph_multi_gpu.get_local_edge_features(efeat_multi_gpu)
 
@@ -154,6 +156,8 @@ def test_distributed_meshgraphnet(partition_size: int, dtype: torch.dtype):
 
     if dist.local_rank == 0:
         print(f"PASSED (partition_size: {partition_size}, dtype: {dtype})")
+
+    torch.distributed.barrier()
 
 
 if __name__ == "__main__":
