@@ -29,7 +29,9 @@ from modulus.distributed import DistributedManager
 from modulus.distributed.utils import create_process_groups, custom_allreduce_fut
 
 
-def test_distributed_meshgraphnet(partition_size: int, dtype: torch.dtype):
+def test_distributed_meshgraphnet(
+    partition_size: int, dtype: torch.dtype, do_concat_trick: bool = False
+):
     dist = DistributedManager()
 
     model_kwds = {
@@ -45,6 +47,7 @@ def test_distributed_meshgraphnet(partition_size: int, dtype: torch.dtype):
         "num_layers_edge_encoder": 2,
         "hidden_dim_node_decoder": 256,
         "num_layers_node_decoder": 2,
+        "do_concat_trick": do_concat_trick,
     }
 
     device = dist.local_rank
@@ -155,15 +158,19 @@ def test_distributed_meshgraphnet(partition_size: int, dtype: torch.dtype):
         ), f"{mask.sum()} elements have diff > {atol} \n {param[mask]} \n {model_multi_gpu_parameters[param_idx][mask]}"
 
     if dist.local_rank == 0:
-        print(f"PASSED (partition_size: {partition_size}, dtype: {dtype})")
+        print(
+            f"PASSED (partition_size: {partition_size}, dtype: {dtype}, concat_trick: {do_concat_trick})"
+        )
 
     torch.distributed.barrier()
 
 
 if __name__ == "__main__":
     DistributedManager.initialize()
-    test_distributed_meshgraphnet(8, torch.float32)
-    test_distributed_meshgraphnet(8, torch.float16)
-    test_distributed_meshgraphnet(8, torch.bfloat16)
-    test_distributed_meshgraphnet(4, torch.float32)
-    test_distributed_meshgraphnet(2, torch.float32)
+    test_distributed_meshgraphnet(8, torch.float32, False)
+    test_distributed_meshgraphnet(8, torch.float32, True)
+    test_distributed_meshgraphnet(8, torch.float16, False)
+    test_distributed_meshgraphnet(8, torch.bfloat16, False)
+    test_distributed_meshgraphnet(8, torch.bfloat16, True)
+    test_distributed_meshgraphnet(4, torch.float32, False)
+    test_distributed_meshgraphnet(2, torch.float32, False)

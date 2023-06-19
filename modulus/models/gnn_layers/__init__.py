@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .distributed_graph import DistributedGraph
+from .graph import CuGraphCSC
 from .distributed_utils import (
     all_gatherv_first_dim,
     gatherv_first_dim,

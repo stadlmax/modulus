@@ -31,7 +31,9 @@ from modulus.distributed.utils import create_process_groups, custom_allreduce_fu
 icosphere_path = get_icosphere_path()
 
 
-def test_distributed_graphcast(partition_size: int, dtype: torch.dtype):
+def test_distributed_graphcast(
+    partition_size: int, dtype: torch.dtype, do_concat_trick: bool = True
+):
     dist = DistributedManager()
 
     model_kwds = {
@@ -43,7 +45,7 @@ def test_distributed_graphcast(partition_size: int, dtype: torch.dtype):
         "output_dim_grid_nodes": 2,
         "processor_layers": 3,
         "hidden_dim": 4,
-        "do_concat_trick": True,
+        "do_concat_trick": do_concat_trick,
         "use_cugraphops_encoder": True,
         "use_cugraphops_processor": True,
         "use_cugraphops_decoder": True,
@@ -118,15 +120,19 @@ def test_distributed_graphcast(partition_size: int, dtype: torch.dtype):
         ), f"{mask.sum()} elements have diff > {atol} \n {param[mask]} \n {model_multi_gpu_parameters[param_idx][mask]}"
 
     if dist.local_rank == 0:
-        print(f"PASSED (partition_size: {partition_size}, dtype: {dtype})")
+        print(
+            f"PASSED (partition_size: {partition_size}, dtype: {dtype}, concat_trick: {do_concat_trick})"
+        )
 
     torch.distributed.barrier()
 
 
 if __name__ == "__main__":
     DistributedManager.initialize()
-    test_distributed_graphcast(8, torch.float32)
-    test_distributed_graphcast(8, torch.float16)
-    test_distributed_graphcast(8, torch.bfloat16)
-    test_distributed_graphcast(4, torch.float32)
-    test_distributed_graphcast(2, torch.float32)
+    test_distributed_graphcast(8, torch.float32, True)
+    test_distributed_graphcast(8, torch.float32, False)
+    test_distributed_graphcast(8, torch.float16, True)
+    test_distributed_graphcast(8, torch.bfloat16, True)
+    test_distributed_graphcast(8, torch.bfloat16, False)
+    test_distributed_graphcast(4, torch.float32, True)
+    test_distributed_graphcast(2, torch.float32, True)

@@ -20,7 +20,8 @@ from torch import Tensor
 from typing import Any, List
 from dataclasses import dataclass
 
-from modulus.models.gnn_layers.utils import set_checkpoint_fn, CuGraphCSC
+from modulus.models.gnn_layers.utils import set_checkpoint_fn
+from modulus.models.gnn_layers.graph import CuGraphCSC
 from modulus.models.gnn_layers.embedder import (
     GraphCastEncoderEmbedder,
     GraphCastDecoderEmbedder,
@@ -148,11 +149,6 @@ class GraphCastNet(Module):
 
         self.is_distributed = False
         if partition_size > 1:
-            assert (
-                use_cugraphops_decoder
-                and use_cugraphops_encoder
-                and use_cugraphops_processor
-            ), "Distributed Training only supported when cugraph-ops is used in all layers."
             self.is_distributed = True
 
         # check the input resolution
@@ -199,7 +195,7 @@ class GraphCastNet(Module):
         self.mesh_edata = self.mesh_graph.edata["x"]
         self.mesh_ndata = self.mesh_graph.ndata["x"]
 
-        if use_cugraphops_encoder:
+        if use_cugraphops_encoder or self.is_distributed:
             offsets, indices, edge_ids = self.g2m_graph.adj_sparse("csc")
             n_in_nodes, n_out_nodes = (
                 self.g2m_graph.num_src_nodes(),
@@ -217,7 +213,7 @@ class GraphCastNet(Module):
             if self.is_distributed:
                 self.g2m_edata = self.g2m_graph.get_local_edge_features(self.g2m_edata)
 
-        if use_cugraphops_decoder:
+        if use_cugraphops_decoder or self.is_distributed:
             offsets, indices, edge_ids = self.m2g_graph.adj_sparse("csc")
             n_in_nodes, n_out_nodes = (
                 self.m2g_graph.num_src_nodes(),
@@ -235,7 +231,7 @@ class GraphCastNet(Module):
             if self.is_distributed:
                 self.m2g_edata = self.m2g_graph.get_local_edge_features(self.m2g_edata)
 
-        if use_cugraphops_processor:
+        if use_cugraphops_processor or self.is_distributed:
             offsets, indices, edge_ids = self.mesh_graph.adj_sparse("csc")
             n_in_nodes, n_out_nodes = (
                 self.mesh_graph.num_src_nodes(),

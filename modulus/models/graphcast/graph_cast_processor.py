@@ -19,7 +19,8 @@ from typing import Union
 from torch import Tensor
 from dgl import DGLGraph
 
-from modulus.models.gnn_layers.utils import set_checkpoint_fn, CuGraphCSC
+from modulus.models.gnn_layers.utils import set_checkpoint_fn
+from modulus.models.gnn_layers.graph import CuGraphCSC
 from modulus.models.gnn_layers.mesh_node_block import MeshNodeBlock
 from modulus.models.gnn_layers.mesh_edge_block import MeshEdgeBlock
 
