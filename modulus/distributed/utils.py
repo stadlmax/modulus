@@ -159,7 +159,8 @@ def custom_allreduce_fut(
 ) -> torch.futures.Future[torch.Tensor]:
     group_to_use = process_group if process_group is not None else dist.group.WORLD
     if divisor is not None:
-        tensor.div_(divisor)
+        tensor = tensor.div_(divisor)
+
     return (
         dist.all_reduce(tensor, group=group_to_use, async_op=True, op=dist.ReduceOp.SUM)
         .get_future()

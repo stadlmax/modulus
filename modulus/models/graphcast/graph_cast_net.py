@@ -662,7 +662,6 @@ class GraphCastNet(Module):
         outvar = outvar.permute(1, 0)
         outvar = outvar.view(self.output_dim_grid_nodes, *self.input_res)
         outvar = torch.unsqueeze(outvar, dim=0)
-
         return outvar
 
     def to(self, *args: Any, **kwargs: Any) -> "GraphCastNet":

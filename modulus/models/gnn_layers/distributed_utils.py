@@ -60,7 +60,6 @@ def _gatherv_first_dim_fwd(
         else None
     )
     dist.gather(tensor, output, dst_rank=0, group=process_group)
-
     return torch.cat(output, dim=0)
 
 
@@ -83,7 +82,11 @@ def _all_gatherv_first_dim_bwd(
     scatter_grad_output = [t.contiguous() for t in scatter_grad_output]
     dist.all_to_all(grad_tensor, scatter_grad_output, group=process_group)
     grad_tensor = torch.stack(grad_tensor, dim=2)
+    # do accumulation in FP32
+    dtype = grad_tensor.dtype
+    grad_tensor = grad_tensor.to(dtype=torch.float32)
     grad_tensor = grad_tensor.sum(dim=2)
+    grad_tensor = grad_tensor.to(dtype=dtype)
     return grad_tensor
 
 
@@ -144,7 +147,7 @@ def _all_to_all_idx_first_dim_bwd(
     num_local_rows: int,
 ) -> torch.Tensor:
     out = torch.empty(
-        (num_local_rows, tensor.size(1)), dtype=tensor.dtype, device=tensor.device
+        (num_local_rows, tensor.size(1)), dtype=torch.float32, device=tensor.device
     )
 
     total_recv_elem = sum(send_sizes)
@@ -162,11 +165,15 @@ def _all_to_all_idx_first_dim_bwd(
         group=local_partition_group,
     )
 
+    # do accumulation in FP32
+    dtype = tensor_to_recv.dtype
+    tensor_to_recv = tensor_to_recv.to(dtype=torch.float32)
     out.scatter_add_(
         src=tensor_to_recv,
         index=send_indices.view(-1, 1).expand(-1, tensor.size(1)),
         dim=0,
     )
+    out = out.to(dtype=dtype)
 
     return out
 
