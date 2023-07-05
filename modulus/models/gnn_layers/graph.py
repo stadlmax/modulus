@@ -24,6 +24,7 @@ import dgl.function as fn
 from typing import Any, Callable, Dict, Optional, Union, Tuple, List
 from torch.utils.checkpoint import checkpoint
 
+from modulus.distributed import DistributedManager
 from modulus.models.gnn_layers import DistributedGraph
 
 try:
@@ -72,10 +73,12 @@ class CuGraphCSC:
         Edges are partitioned such that each incoming edge is on the same rank
         as each node for which it represents the destination node. For message-passing,
         the corresponding features from source nodes need to be gathered.
-    partition_groups : List[dist.ProcessGroup], optional
-        list of necessary process groups needed for the distributed settings
-        as described above, needs to be passed if partition_size > 1, otherwise
-        it should be passed as None
+    partition_group_name : str, optional
+        for distributed settings, the name of the subgroup representing the partitioned
+        graph is intended to be passed on to be used with dist_manager as described below
+    dist_manager : DistributedManager, optional
+        for distributed settings, the an instance of the DistributedManager singleton of Modulus
+        is intended to be passed on
     """
 
     def __init__(
@@ -88,7 +91,8 @@ class CuGraphCSC:
         reverse_graph_bwd: bool = True,
         cache_graph: bool = True,
         partition_size: int = 1,
-        partition_groups: List[dist.ProcessGroup] = None,
+        partition_group_name: Optional[str] = None,
+        dist_manager: Optional[DistributedManager] = None,
     ) -> None:
         self.offsets = offsets
         self.indices = indices
@@ -101,16 +105,13 @@ class CuGraphCSC:
         # cugraph-ops structures
         self.bipartite_csc = None
         self.static_csc = None
-
         # dgl graph
         self.dgl_graph = None
 
         self.is_distributed = False
         self.dist_csc = None
-        self.partition_size = partition_size
-        self.partition_groups = partition_groups
 
-        if self.partition_size <= 1:
+        if partition_size <= 1:
             self.is_distributed = False
             return
 
@@ -118,39 +119,39 @@ class CuGraphCSC:
             self.ef_indices is None
         ), "DistributedGraph does not support mapping CSC-indices to COO-indices."
         self.dist_graph = DistributedGraph(
-            self.offsets, self.indices, self.partition_size, self.partition_groups
+            self.offsets, self.indices, partition_size, partition_group_name, dist_manager
         )
-
+        # overwrite graph information with local graph after distribution
         self.offsets = self.dist_graph.local_offsets
         self.indices = self.dist_graph.local_indices
         self.num_src_nodes = self.dist_graph.num_local_src_nodes
         self.num_dst_nodes = self.dist_graph.num_local_dst_nodes
         self.is_distributed = True
 
-    def get_partioned_local_src_node_features(
-        self, global_nfeat: torch.Tensor
+    def get_src_node_features_in_partition(
+        self, global_src_feat: torch.Tensor
     ) -> torch.Tensor:
         if self.is_distributed:
-            return self.dist_graph.get_partioned_local_src_node_features(global_nfeat)
-        return global_nfeat
+            return self.dist_graph.get_src_node_features_in_partition(global_src_feat)
+        return global_src_feat
 
-    def get_all_local_src_node_features(
-        self, partioned_local_src_nfeat: torch.Tensor
+    def get_src_node_features_in_local_graph(
+        self, local_src_feat: torch.Tensor
     ) -> torch.Tensor:
         if self.is_distributed:
-            return self.dist_graph.get_all_local_src_node_features(
-                partioned_local_src_nfeat
+            return self.dist_graph.get_src_node_features_in_local_graph(
+                local_src_feat
             )
-        return partioned_local_src_nfeat
+        return local_src_feat
 
-    def get_local_dst_node_features(self, global_nfeat: torch.Tensor) -> torch.Tensor:
+    def get_dst_node_features_in_partition(self, global_dst_feat: torch.Tensor) -> torch.Tensor:
         if self.is_distributed:
-            return self.dist_graph.get_local_dst_node_features(global_nfeat)
-        return global_nfeat
+            return self.dist_graph.get_dst_node_features_in_partition(global_dst_feat)
+        return global_dst_feat
 
-    def get_local_edge_features(self, global_efeat: torch.Tensor) -> torch.Tensor:
+    def get_edge_features_in_partition(self, global_efeat: torch.Tensor) -> torch.Tensor:
         if self.is_distributed:
-            return self.dist_graph.get_local_edge_features(global_efeat)
+            return self.dist_graph.get_edge_features_in_partition(global_efeat)
         return global_efeat
 
     def get_global_src_node_features(self, local_nfeat: torch.Tensor) -> torch.Tensor:

@@ -27,12 +27,6 @@ def _all_gatherv_first_dim_fwd(
 ) -> torch.Tensor:
     assert tensor.dim() == 2
     dim = tensor.size(1)
-    # output = [
-    #     torch.empty((size, dim), dtype=tensor.dtype, device=tensor.device)
-    #     for size in sizes
-    # ]
-    # dist.all_gather(output, tensor, group=process_group)
-    # return torch.cat(output, dim=0)
     global_size = sum(sizes)
     output_tensor = torch.empty(
         (global_size, dim), dtype=tensor.dtype, device=tensor.device
@@ -82,11 +76,9 @@ def _all_gatherv_first_dim_bwd(
     scatter_grad_output = [t.contiguous() for t in scatter_grad_output]
     dist.all_to_all(grad_tensor, scatter_grad_output, group=process_group)
     grad_tensor = torch.stack(grad_tensor, dim=2)
-    # do accumulation in FP32
-    dtype = grad_tensor.dtype
-    grad_tensor = grad_tensor.to(dtype=torch.float32)
-    grad_tensor = grad_tensor.sum(dim=2)
-    grad_tensor = grad_tensor.to(dtype=dtype)
+    # do sum in FP32
+    grad_tensor = grad_tensor.sum(dim=2, dtype=torch.float32)
+    grad_tensor = grad_tensor.to(dtype=grad_output.dtype)
     return grad_tensor
 
 
@@ -113,14 +105,10 @@ def _all_to_all_idx_first_dim_fwd(
     send_indices: torch.Tensor,
     recv_sizes: List[int],
     send_sizes: List[int],
-    num_local_rows: int,
 ) -> torch.Tensor:
     total_recv_elem = sum(recv_sizes)
     local_rank = dist.get_rank(group=local_partition_group)
     global_rank = dist.get_rank()
-    assert (
-        total_recv_elem == num_local_rows
-    ), f"Expected {num_local_rows} to receive on rank {local_rank} (global rank {global_rank}), got {total_recv_elem}."
 
     tensor_to_send = tensor[send_indices, :]
     tensor_to_recv = torch.empty(
@@ -146,10 +134,6 @@ def _all_to_all_idx_first_dim_bwd(
     send_sizes: List[int],
     num_local_rows: int,
 ) -> torch.Tensor:
-    out = torch.empty(
-        (num_local_rows, tensor.size(1)), dtype=torch.float32, device=tensor.device
-    )
-
     total_recv_elem = sum(send_sizes)
 
     tensor_to_send = tensor
@@ -165,15 +149,16 @@ def _all_to_all_idx_first_dim_bwd(
         group=local_partition_group,
     )
 
-    # do accumulation in FP32
-    dtype = tensor_to_recv.dtype
-    tensor_to_recv = tensor_to_recv.to(dtype=torch.float32)
+    # scatter_add in full precision
+    out = torch.empty(
+        (num_local_rows, tensor.size(1)), dtype=torch.float32, device=tensor.device
+    )
     out.scatter_add_(
-        src=tensor_to_recv,
+        src=tensor_to_recv.to(dtype=torch.float32),
         index=send_indices.view(-1, 1).expand(-1, tensor.size(1)),
         dim=0,
     )
-    out = out.to(dtype=dtype)
+    out = out.to(dtype=tensor.dtype)
 
     return out
 
@@ -246,21 +231,15 @@ class AllToAllIdxFirstDimAutograd(torch.autograd.Function):
         recv_sizes: List[int],
         send_sizes: List[int],
         process_group: dist.ProcessGroup,
-        size_per_partition: List[int],
     ) -> torch.Tensor:
         ctx.send_indices = send_indices
         ctx.recv_sizes = recv_sizes
         ctx.send_sizes = send_sizes
-        ctx.size_per_partition = size_per_partition
         ctx.process_group = process_group
 
         local_rank = dist.get_rank(group=process_group)
         ctx.local_rank = local_rank
         global_rank = dist.get_rank()
-        expected_rows = size_per_partition[local_rank]
-        assert (
-            tensor.size(0) == expected_rows
-        ), f"Expected tensor.size(0) = {expected_rows} on rank {local_rank} (global rank {global_rank}), but got {tensor.size(0)} instead."
 
         gathered_tensor = _all_to_all_idx_first_dim_fwd(
             tensor,
@@ -268,7 +247,6 @@ class AllToAllIdxFirstDimAutograd(torch.autograd.Function):
             send_indices,
             recv_sizes,
             send_sizes,
-            sum(recv_sizes),
         )
         ctx.gathered_shape = gathered_tensor.shape
         ctx.tensor_shape = tensor.shape
@@ -280,10 +258,6 @@ class AllToAllIdxFirstDimAutograd(torch.autograd.Function):
         need_grad_src_tensor = ctx.needs_input_grad[0]
         local_rank = dist.get_rank(group=ctx.process_group)
         global_rank = dist.get_rank()
-        num_local_rows = sum(ctx.recv_sizes)
-        assert (
-            grad_src_tensor.size(0) == num_local_rows
-        ), f"Expected tensor.size(0) = {num_local_rows} on rank {local_rank} (global rank {global_rank}), but got {tensor.size(0)} instead."
 
         grad_dst_tensor = None
         if need_grad_src_tensor:
@@ -293,7 +267,7 @@ class AllToAllIdxFirstDimAutograd(torch.autograd.Function):
                 ctx.send_indices,
                 ctx.recv_sizes,
                 ctx.send_sizes,
-                ctx.size_per_partition[ctx.local_rank],
+                ctx.tensor_shape[0],
             )
         return grad_dst_tensor, None, None, None, None, None
 
@@ -322,8 +296,7 @@ def all_to_all_idx_first_dim(
     recv_sizes: List[int],
     send_sizes: List[int],
     process_group: dist.ProcessGroup,
-    size_per_partition: List[int],
 ) -> torch.Tensor:
     return AllToAllIdxFirstDimAutograd.apply(
-        tensor, send_indices, recv_sizes, send_sizes, process_group, size_per_partition
+        tensor, send_indices, recv_sizes, send_sizes, process_group
     )

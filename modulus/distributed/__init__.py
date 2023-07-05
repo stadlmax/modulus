@@ -14,4 +14,4 @@
 
 
 from .manager import DistributedManager
-from .utils import gather_loss, custom_allreduce_fut, create_process_groups
+from .utils import gather_loss, custom_allreduce_fut

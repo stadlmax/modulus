@@ -23,7 +23,6 @@ from utils import fix_random_seeds, create_random_input
 
 import common
 from utils import get_icosphere_path
-from modulus.distributed.utils import create_process_groups, custom_allreduce_fut
 from modulus.models.graphcast.graph_cast_net import GraphCastNet
 
 icosphere_path = get_icosphere_path()

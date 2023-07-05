@@ -140,6 +140,30 @@ class DistributedManager(object):
         else:
             return dist.get_rank(group=group)
 
+    def group_id(self, name=None):
+        """
+        Returns the ID of the named process group
+        """
+        if name is None:
+            return 0
+        group = self.group(name)
+        if group is None:
+            return 0
+        else:
+            return self._group_ids[name]
+
+    def num_groups(self, name=None):
+        """
+        Returns the number of subgroups with given name
+        """
+        if name is None:
+            return 1
+        group = self.group(name)
+        if group is None:
+            return 1
+        else:
+            return self._num_groups[name]
+
     def group_name(self, group=None):
         """
         Returns the name of process group
@@ -157,6 +181,11 @@ class DistributedManager(object):
     def broadcast_buffers(self, broadcast: bool):
         """Setter for broadcast_buffers"""
         self._broadcast_buffers = broadcast
+
+    def barrier(self, name=None):
+        if not self.distributed:
+            return
+        torch.distributed.barrier(self.group(name))
 
     @property
     def find_unused_parameters(self):
@@ -305,6 +334,8 @@ class DistributedManager(object):
         manager._groups = {}
         manager._group_ranks = {}
         manager._group_names = {}
+        manager._group_ids = {}
+        manager._num_groups = {}
 
         manager._device = torch.device(
             f"cuda:{manager.local_rank}" if torch.cuda.is_available() else "cpu"
@@ -318,6 +349,66 @@ class DistributedManager(object):
         # Set device for this process and empty cache to optimize memory usage
         torch.cuda.device(manager.device)
         torch.cuda.empty_cache()
+
+    @staticmethod
+    def create_process_subgroup(subgroup_name: str, subgroup_size: int, verbose: bool = False):
+        manager = DistributedManager()
+        if not manager.distributed:
+            return None
+
+        assert subgroup_name not in manager._groups, f"Group with name {subgroup_name} already exists" 
+
+        world_size = dist.get_world_size()
+        world_rank = dist.get_rank()
+        num_subgroups = world_size // subgroup_size
+        manager._num_groups[subgroup_name] = num_subgroups
+
+        assert(
+            world_size % subgroup_size == 0
+        ), f"Cannot divide world size {world_size} evently into subgroups of size {subgroup_size}"
+
+
+        # Create all the sub-groups
+        # Note: all ranks in the job need to create all sub-groups in
+        # the same order even if a rank is not part of a sub-group
+        manager._group_ranks[subgroup_name] = []
+        for i in range(num_subgroups):
+            # get global ranks that are part of this sub-group
+            start = i * subgroup_size
+            end = start + subgroup_size
+            ranks = list(range(start, end))
+            tmp_group = dist.new_group(ranks=ranks)
+            manager._group_ranks[subgroup_name].append(ranks)
+            if manager.rank in ranks:
+                # set group in manager only if this rank is part of the group
+                manager._groups[subgroup_name] = tmp_group
+                manager._group_names[tmp_group] = subgroup_name
+                manager._group_ids[subgroup_name] = i
+
+        if verbose and manager.rank == 0:
+            print(f"Process group '{subgroup_name}':")
+            for grp in manager._group_ranks[subgroup_name]:
+                print("    ", grp)
+
+    def cleanup_group(self, name=None):
+        if name is None:
+            DistributedManager.cleanup()
+
+        group = self._groups[name]
+        self._group_names.pop(group)
+        self._num_groups.pop(name)
+        self._group_ids.pop(name)
+        self._group_ranks.pop(name)
+        group = self._groups.pop(name)
+        dist.destroy_process_group(group)
+
+    @staticmethod
+    def cleanup():
+        """Clean up distributed group and singleton"""
+        manager = DistributedManager()
+        if manager._distributed:
+            dist.destroy_process_group()
+        DistributedManager._shared_state = {}
 
     # @staticmethod
     # def create_process_subgroup(name: str, size: int, group_name=None, verbose=False):
@@ -394,9 +485,3 @@ class DistributedManager(object):
     #         print(f"Process group '{name}':")
     #         for grp in manager._group_ranks[name]:
     #             print("    ", grp)
-
-    @staticmethod
-    def cleanup():
-        """Clean up distributed group and singleton"""
-        dist.destroy_process_group()
-        DistributedManager._shared_state = {}

@@ -17,7 +17,7 @@ import torch.distributed as dist
 import torch.nn as nn
 from torch import Tensor
 
-from typing import Any, List
+from typing import Any, List, Optional
 from dataclasses import dataclass
 
 from modulus.models.gnn_layers.utils import set_checkpoint_fn
@@ -33,6 +33,7 @@ from modulus.models.module import Module
 from modulus.models.meta import ModelMetaData
 from modulus.utils.graphcast.graph import Graph
 from modulus.utils.graphcast.data_utils import StaticData
+from modulus.distributed import DistributedManager
 
 from .graph_cast_processor import GraphCastProcessor
 
@@ -99,15 +100,23 @@ class GraphCastNet(Module):
     partition_size : int, optional
         If cugraph-ops is used in all layers, then this implementations supports
         a tensor-parallel-like distributed training where the graph is naively
-        partioned such that all nodes are split evenely across all participating
+        partitioned such that all nodes are split evenely across all participating
         ranks in this partition of a certain size.
         Edges are partitioned such that each incoming edge is on the same rank
         as each node for which it represents the destination node. For message-passing,
         the corresponding features from source nodes need to be gathered.
-    partition_groups : List[dist.ProcessGroup], optional
-        list of necessary process groups needed for the distributed settings
-        as described above, needs to be passed if partition_size > 1, otherwise
-        it should be passed as None
+    partition_group_name : str, optional
+        for distributed settings, the name of the subgroup representing the partitioned
+        graph is intended to be passed on to be used with dist_manager as described below
+    dist_manager : DistributedManager, optional
+        for distributed settings, the an instance of the DistributedManager singleton of Modulus
+        is intended to be passed on
+
+    expect_partitioned_input : bool, default=True
+        whether one expects the input to be already distributed in a distributed setting
+
+    produce_aggregated_output : bool, default=False
+        whether one expects the model to produce an aggregated output on each rank
 
     Note
     ----
@@ -143,13 +152,18 @@ class GraphCastNet(Module):
         do_concat_trick: bool = False,
         recompute_activation: bool = False,
         partition_size: int = 1,
-        partition_groups: List[dist.ProcessGroup] = None,
+        partition_group_name: Optional[str] = None,
+        dist_manager: Optional[str] = None,
+        expect_partitioned_input: bool = False,
+        produce_aggregated_output: bool = True,
     ):
         super().__init__(meta=MetaData())
 
         self.is_distributed = False
         if partition_size > 1:
             self.is_distributed = True
+        self.expect_partitioned_input = expect_partitioned_input
+        self.produce_aggregated_output = produce_aggregated_output
 
         # check the input resolution
         if input_res != (721, 1440):
@@ -172,6 +186,10 @@ class GraphCastNet(Module):
             ).get()
             num_static_feat = self.static_data.size(1)
             input_dim_grid_nodes += num_static_feat
+            if self.is_distributed and expect_partitioned_input:
+                # if input itself is distributed, we also need to distribute static data
+                self.static_data = self.static_data[0].view(num_static_feat, -1).permute(1, 0)
+                self.static_data = self.g2m_graph.get_src_node_features_in_partition(self.static_data)
         else:
             self.static_data = None
         self.input_dim_grid_nodes = input_dim_grid_nodes
@@ -208,10 +226,11 @@ class GraphCastNet(Module):
                 n_in_nodes,
                 n_out_nodes,
                 partition_size=partition_size,
-                partition_groups=partition_groups,
+                partition_group_name=partition_group_name,
+                dist_manager=dist_manager,
             )
             if self.is_distributed:
-                self.g2m_edata = self.g2m_graph.get_local_edge_features(self.g2m_edata)
+                self.g2m_edata = self.g2m_graph.get_edge_features_in_partition(self.g2m_edata)
 
         if use_cugraphops_decoder or self.is_distributed:
             offsets, indices, edge_ids = self.m2g_graph.adj_sparse("csc")
@@ -226,10 +245,11 @@ class GraphCastNet(Module):
                 n_in_nodes,
                 n_out_nodes,
                 partition_size=partition_size,
-                partition_groups=partition_groups,
+                partition_group_name=partition_group_name,
+                dist_manager=dist_manager,
             )
             if self.is_distributed:
-                self.m2g_edata = self.m2g_graph.get_local_edge_features(self.m2g_edata)
+                self.m2g_edata = self.m2g_graph.get_edge_features_in_partition(self.m2g_edata)
 
         if use_cugraphops_processor or self.is_distributed:
             offsets, indices, edge_ids = self.mesh_graph.adj_sparse("csc")
@@ -244,13 +264,14 @@ class GraphCastNet(Module):
                 n_in_nodes,
                 n_out_nodes,
                 partition_size=partition_size,
-                partition_groups=partition_groups,
+                partition_group_name=partition_group_name,
+                dist_manager=dist_manager,
             )
             if self.is_distributed:
-                self.mesh_edata = self.mesh_graph.get_local_edge_features(
+                self.mesh_edata = self.mesh_graph.get_edge_features_in_partition(
                     self.mesh_edata
                 )
-                self.mesh_ndata = self.mesh_graph.get_local_dst_node_features(
+                self.mesh_ndata = self.mesh_graph.get_dst_node_features_in_partition(
                     self.mesh_ndata
                 )
 
@@ -630,15 +651,22 @@ class GraphCastNet(Module):
         Tensor
             Reshaped input.
         """
-        assert invar.size(0) == 1, "GraphCast does not support batch size > 1"
-        # concat static data
-        if self.has_static_data:
-            invar = torch.concat((invar, self.static_data), dim=1)
-        invar = invar[0].view(self.input_dim_grid_nodes, -1).permute(1, 0)
+        if self.expect_partitioned_input:
+            if self.has_static_data:
+                # in this case, input is expected to be already of shape [N, C]
+                invar = torch.concat([invar, self.static_data], dim=1)  
+            
+        else:
+            # default case: input in the shape [N, C, H, W]
+            assert invar.size(0) == 1, "GraphCast does not support batch size > 1"
+            # concat static data
+            if self.has_static_data:
+                invar = torch.concat((invar, self.static_data), dim=1)
+            invar = invar[0].view(self.input_dim_grid_nodes, -1).permute(1, 0)
 
-        if self.is_distributed:
-            # partition node features
-            invar = self.g2m_graph.get_partioned_local_src_node_features(invar)
+            if self.is_distributed:
+                # partition node features
+                invar = self.g2m_graph.get_src_node_features_in_partition(invar)
 
         return invar
 
@@ -655,13 +683,17 @@ class GraphCastNet(Module):
         Tensor
             The reshaped output of the model.
         """
+        if self.produce_aggregated_output:
+            # default case: output of shape [N, C, H, W]
+            if self.is_distributed:
+                outvar = self.m2g_graph.get_global_dst_node_features(outvar)
 
-        if self.is_distributed:
-            outvar = self.m2g_graph.get_global_dst_node_features(outvar)
+            outvar = outvar.permute(1, 0)
+            outvar = outvar.view(self.output_dim_grid_nodes, *self.input_res)
+            outvar = torch.unsqueeze(outvar, dim=0)
 
-        outvar = outvar.permute(1, 0)
-        outvar = outvar.view(self.output_dim_grid_nodes, *self.input_res)
-        outvar = torch.unsqueeze(outvar, dim=0)
+        # else: keep output in shape [N, C] == no-op
+        
         return outvar
 
     def to(self, *args: Any, **kwargs: Any) -> "GraphCastNet":
