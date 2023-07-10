@@ -188,8 +188,12 @@ class GraphCastNet(Module):
             input_dim_grid_nodes += num_static_feat
             if self.is_distributed and expect_partitioned_input:
                 # if input itself is distributed, we also need to distribute static data
-                self.static_data = self.static_data[0].view(num_static_feat, -1).permute(1, 0)
-                self.static_data = self.g2m_graph.get_src_node_features_in_partition(self.static_data)
+                self.static_data = (
+                    self.static_data[0].view(num_static_feat, -1).permute(1, 0)
+                )
+                self.static_data = self.g2m_graph.get_src_node_features_in_partition(
+                    self.static_data
+                )
         else:
             self.static_data = None
         self.input_dim_grid_nodes = input_dim_grid_nodes
@@ -230,7 +234,9 @@ class GraphCastNet(Module):
                 dist_manager=dist_manager,
             )
             if self.is_distributed:
-                self.g2m_edata = self.g2m_graph.get_edge_features_in_partition(self.g2m_edata)
+                self.g2m_edata = self.g2m_graph.get_edge_features_in_partition(
+                    self.g2m_edata
+                )
 
         if use_cugraphops_decoder or self.is_distributed:
             offsets, indices, edge_ids = self.m2g_graph.adj_sparse("csc")
@@ -249,7 +255,9 @@ class GraphCastNet(Module):
                 dist_manager=dist_manager,
             )
             if self.is_distributed:
-                self.m2g_edata = self.m2g_graph.get_edge_features_in_partition(self.m2g_edata)
+                self.m2g_edata = self.m2g_graph.get_edge_features_in_partition(
+                    self.m2g_edata
+                )
 
         if use_cugraphops_processor or self.is_distributed:
             offsets, indices, edge_ids = self.mesh_graph.adj_sparse("csc")
@@ -629,16 +637,16 @@ class GraphCastNet(Module):
         self,
         grid_nfeat: Tensor,
     ) -> Tensor:
-        invar = self.prepare_input(grid_nfeat)
+        invar = self.prepare_input(grid_nfeat, self.expect_partitioned_input)
         outvar = self.model_checkpoint_fn(
             self.custom_forward,
             invar,
             use_reentrant=False,
             preserve_rng_state=False,
         )
-        return self.prepare_output(outvar)
+        return self.prepare_output(outvar, self.produce_aggregated_output)
 
-    def prepare_input(self, invar: Tensor) -> Tensor:
+    def prepare_input(self, invar: Tensor, expect_partitioned_input: bool) -> Tensor:
         """Prepares the input to the model in the required shape.
 
         Parameters
@@ -651,11 +659,11 @@ class GraphCastNet(Module):
         Tensor
             Reshaped input.
         """
-        if self.expect_partitioned_input:
+        if expect_partitioned_input:
             if self.has_static_data:
                 # in this case, input is expected to be already of shape [N, C]
-                invar = torch.concat([invar, self.static_data], dim=1)  
-            
+                invar = torch.concat([invar, self.static_data], dim=1)
+
         else:
             # default case: input in the shape [N, C, H, W]
             assert invar.size(0) == 1, "GraphCast does not support batch size > 1"
@@ -670,7 +678,7 @@ class GraphCastNet(Module):
 
         return invar
 
-    def prepare_output(self, outvar: Tensor) -> Tensor:
+    def prepare_output(self, outvar: Tensor, produce_aggregated_output: bool) -> Tensor:
         """Prepares the output of the model in the shape [N, C, H, W].
 
         Parameters
@@ -683,7 +691,7 @@ class GraphCastNet(Module):
         Tensor
             The reshaped output of the model.
         """
-        if self.produce_aggregated_output:
+        if produce_aggregated_output:
             # default case: output of shape [N, C, H, W]
             if self.is_distributed:
                 outvar = self.m2g_graph.get_global_dst_node_features(outvar)
@@ -693,7 +701,7 @@ class GraphCastNet(Module):
             outvar = torch.unsqueeze(outvar, dim=0)
 
         # else: keep output in shape [N, C] == no-op
-        
+
         return outvar
 
     def to(self, *args: Any, **kwargs: Any) -> "GraphCastNet":

@@ -64,15 +64,17 @@ def test_distributed_graphcast(
     # initialze distributed model with the same seeds
     fix_random_seeds(partition)
     custom_hook = lambda process_group, bucket: custom_allreduce_fut(
-        process_group, bucket.buffer(), divisor=dist_manager.num_groups("graph_partition")
+        process_group,
+        bucket.buffer(),
+        divisor=dist_manager.num_groups("graph_partition"),
     )
     model_multi_gpu = GraphCastNet(
-        partition_size=partition_size, 
-        partition_group_name="graph_partition", 
+        partition_size=partition_size,
+        partition_group_name="graph_partition",
         dist_manager=dist_manager,
         expect_partitioned_input=True,
         produce_aggregated_output=False,
-        **model_kwds
+        **model_kwds,
     ).to(device=device, dtype=dtype)
 
     model_multi_gpu = DistributedDataParallel(
@@ -85,8 +87,14 @@ def test_distributed_graphcast(
         device=device, dtype=dtype
     )
     x_multi_gpu = x_single_gpu.detach().clone()
-    x_multi_gpu = x_multi_gpu[0].view(model_multi_gpu.module.input_dim_grid_nodes, -1).permute(1, 0)
-    x_multi_gpu = model_multi_gpu.module.g2m_graph.get_src_node_features_in_partition(x_multi_gpu)
+    x_multi_gpu = (
+        x_multi_gpu[0]
+        .view(model_multi_gpu.module.input_dim_grid_nodes, -1)
+        .permute(1, 0)
+    )
+    x_multi_gpu = model_multi_gpu.module.g2m_graph.get_src_node_features_in_partition(
+        x_multi_gpu
+    )
 
     # forward + backward passes
     out_single_gpu = model_single_gpu(x_single_gpu)
@@ -106,10 +114,12 @@ def test_distributed_graphcast(
     atol, rtol = tolerances[dtype]
 
     # compare forward, now fully materialize out_multi_gpu to faciliate comparison
-    out_multi_gpu = model_multi_gpu.module.m2g_graph.get_global_dst_node_features(out_multi_gpu)
+    out_multi_gpu = model_multi_gpu.module.m2g_graph.get_global_dst_node_features(
+        out_multi_gpu
+    )
     out_multi_gpu = out_multi_gpu.permute(1, 0).view(out_single_gpu.shape)
-    #out_single_gpu = out_single_gpu[0].view(model_multi_gpu.module.output_dim_grid_nodes, -1).permute(1, 0)
-    #out_single_gpu = model_multi_gpu.module.m2g_graph.get_dst_node_features_in_partition(out_single_gpu)
+    # out_single_gpu = out_single_gpu[0].view(model_multi_gpu.module.output_dim_grid_nodes, -1).permute(1, 0)
+    # out_single_gpu = model_multi_gpu.module.m2g_graph.get_dst_node_features_in_partition(out_single_gpu)
     diff = out_single_gpu - out_multi_gpu
     diff = torch.abs(diff)
     mask = diff > atol
@@ -132,13 +142,19 @@ def test_distributed_graphcast(
     start_multi = torch.cuda.Event(enable_timing=True)
     end_multi = torch.cuda.Event(enable_timing=True)
 
-    optim_single = torch.optim.Adam(model_single_gpu.parameters(), fused=True, foreach=True)
-    optim_multi  = torch.optim.Adam(model_multi_gpu.parameters(), fused=True, foreach=True)
+    optim_single = torch.optim.Adam(
+        model_single_gpu.parameters(), fused=True, foreach=True
+    )
+    optim_multi = torch.optim.Adam(
+        model_multi_gpu.parameters(), fused=True, foreach=True
+    )
 
     dist_manager.barrier()
 
     start_single.record()
-    torch.cuda.nvtx.range_push(f"SINGLE GPU: {dtype}, {partition_size}, {do_concat_trick}")
+    torch.cuda.nvtx.range_push(
+        f"SINGLE GPU: {dtype}, {partition_size}, {do_concat_trick}"
+    )
     for _ in range(20):
         optim_single.zero_grad(set_to_none=True)
         out_single_gpu = model_single_gpu(x_single_gpu)
@@ -154,7 +170,9 @@ def test_distributed_graphcast(
     dist_manager.barrier()
 
     start_multi.record()
-    torch.cuda.nvtx.range_push(f"MULTI GPU: {dtype}, {partition_size}, {do_concat_trick}")
+    torch.cuda.nvtx.range_push(
+        f"MULTI GPU: {dtype}, {partition_size}, {do_concat_trick}"
+    )
     for _ in range(20):
         optim_multi.zero_grad(set_to_none=True)
         out_multi_gpu = model_multi_gpu(x_multi_gpu)

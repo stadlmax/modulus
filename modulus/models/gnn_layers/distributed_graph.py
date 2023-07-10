@@ -37,7 +37,7 @@ class DistributedGraph:
         partition_group_name: str,
         dist_manager: DistributedManager,
     ):
-       # global information about node ids and edge ids
+        # global information about node ids and edge ids
         self.num_global_src_nodes = global_indices.max().item() + 1
         self.num_global_dst_nodes = global_offsets.size(0) - 1
         self.num_global_indices = global_indices.size(0)
@@ -45,16 +45,24 @@ class DistributedGraph:
         # csc-structure of local graph
         self.local_offsets = None
         self.local_indices = None
-        self.num_local_src_nodes = None # number of unique source nodes of local graph, i.e.
-        self.num_local_dst_nodes = None # number of destination nodes of local graph
-        self.num_local_indices = None # number of indices of local graph
+        self.num_local_src_nodes = (
+            None  # number of unique source nodes of local graph, i.e.
+        )
+        self.num_local_dst_nodes = None  # number of destination nodes of local graph
+        self.num_local_indices = None  # number of indices of local graph
 
-         # source, destination, and edge ids per partition
-        self.dst_nodes_in_partition = None # global IDs of destination nodes in this partition
-        self.src_nodes_in_partition = None # global IDs of source nodes in this partition
-        self.num_src_nodes_in_partition = None # number of partitioned source nodes in the local partition
-        self.num_dst_nodes_in_partition = None # number of partitioned destination nodes in the local partition (=self.num_local_dst_nodes)
-        self.num_indices_in_partition = None # number of partitioned indices in this partition (=self.num_local_indices)
+        # source, destination, and edge ids per partition
+        self.dst_nodes_in_partition = (
+            None  # global IDs of destination nodes in this partition
+        )
+        self.src_nodes_in_partition = (
+            None  # global IDs of source nodes in this partition
+        )
+        self.num_src_nodes_in_partition = (
+            None  # number of partitioned source nodes in the local partition
+        )
+        self.num_dst_nodes_in_partition = None  # number of partitioned destination nodes in the local partition (=self.num_local_dst_nodes)
+        self.num_indices_in_partition = None  # number of partitioned indices in this partition (=self.num_local_indices)
         self.num_src_nodes_in_each_partition = [None] * partition_size
         self.num_indices_in_each_partition = [None] * partition_size
         self.num_dst_nodes_in_each_partition = [None] * partition_size
@@ -124,8 +132,7 @@ class DistributedGraph:
             )
             global_src_ids_to_gpu = global_src_ids_per_rank // src_nodes_in_partition
             remote_src_ids_per_rank = (
-                global_src_ids_per_rank
-                - global_src_ids_to_gpu * src_nodes_in_partition
+                global_src_ids_per_rank - global_src_ids_to_gpu * src_nodes_in_partition
             )
 
             indices = local_src_ids_per_rank[inverse_mapping]
@@ -136,15 +143,13 @@ class DistributedGraph:
                 self.num_indices_in_partition = self.num_local_indices
                 self.num_local_dst_nodes = offsets.size(0) - 1
                 self.num_dst_nodes_in_each_partition = [
-                    dst_offsets_in_partition[rank + 1]
-                    - dst_offsets_in_partition[rank]
+                    dst_offsets_in_partition[rank + 1] - dst_offsets_in_partition[rank]
                     for rank in range(self.partition_size)
                 ]
                 self.num_dst_nodes_in_partition = self.num_local_dst_nodes
                 self.num_local_src_nodes = global_src_ids_per_rank.size(0)
                 self.num_src_nodes_in_each_partition = [
-                    src_offsets_in_partition[rank + 1]
-                    - src_offsets_in_partition[rank]
+                    src_offsets_in_partition[rank + 1] - src_offsets_in_partition[rank]
                     for rank in range(self.partition_size)
                 ]
                 self.num_src_nodes_in_partition = self.num_src_nodes_in_each_partition[
@@ -260,8 +265,7 @@ class DistributedGraph:
         )
 
     def get_edge_features_in_local_grpah(
-        self,
-        partitioned_edge_features: torch.Tensor
+        self, partitioned_edge_features: torch.Tensor
     ) -> torch.Tensor:
         # current partitioning scheme assumes that
         # local graph is built from partitioned IDs

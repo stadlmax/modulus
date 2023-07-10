@@ -119,7 +119,11 @@ class CuGraphCSC:
             self.ef_indices is None
         ), "DistributedGraph does not support mapping CSC-indices to COO-indices."
         self.dist_graph = DistributedGraph(
-            self.offsets, self.indices, partition_size, partition_group_name, dist_manager
+            self.offsets,
+            self.indices,
+            partition_size,
+            partition_group_name,
+            dist_manager,
         )
         # overwrite graph information with local graph after distribution
         self.offsets = self.dist_graph.local_offsets
@@ -139,17 +143,19 @@ class CuGraphCSC:
         self, local_src_feat: torch.Tensor
     ) -> torch.Tensor:
         if self.is_distributed:
-            return self.dist_graph.get_src_node_features_in_local_graph(
-                local_src_feat
-            )
+            return self.dist_graph.get_src_node_features_in_local_graph(local_src_feat)
         return local_src_feat
 
-    def get_dst_node_features_in_partition(self, global_dst_feat: torch.Tensor) -> torch.Tensor:
+    def get_dst_node_features_in_partition(
+        self, global_dst_feat: torch.Tensor
+    ) -> torch.Tensor:
         if self.is_distributed:
             return self.dist_graph.get_dst_node_features_in_partition(global_dst_feat)
         return global_dst_feat
 
-    def get_edge_features_in_partition(self, global_efeat: torch.Tensor) -> torch.Tensor:
+    def get_edge_features_in_partition(
+        self, global_efeat: torch.Tensor
+    ) -> torch.Tensor:
         if self.is_distributed:
             return self.dist_graph.get_edge_features_in_partition(global_efeat)
         return global_efeat

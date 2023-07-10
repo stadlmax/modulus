@@ -52,7 +52,7 @@ def test_distributed_meshgraphnet(
     }
 
     # initialize single GPU model for reference
-    device=dist_manager.local_rank
+    device = dist_manager.local_rank
     partition = dist_manager.group_id("graph_partition")
     torch.cuda.manual_seed(partition)
     torch.manual_seed(partition)
@@ -65,7 +65,9 @@ def test_distributed_meshgraphnet(
     np.random.seed(partition)
 
     custom_hook = lambda process_group, bucket: custom_allreduce_fut(
-        process_group, bucket.buffer(), divisor=dist_manager.num_groups("graph_partition")
+        process_group,
+        bucket.buffer(),
+        divisor=dist_manager.num_groups("graph_partition"),
     )
     model_multi_gpu = MeshGraphNet(**model_kwds).to(device=device, dtype=dtype)
 
@@ -99,7 +101,7 @@ def test_distributed_meshgraphnet(
         num_nodes,
         partition_size=partition_size,
         partition_group_name="graph_partition",
-        dist_manager=dist_manager
+        dist_manager=dist_manager,
     )
 
     nfeat_single_gpu = torch.randn((num_nodes, model_kwds["input_dim_nodes"])).to(
