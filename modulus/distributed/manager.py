@@ -145,10 +145,10 @@ class DistributedManager(object):
         Returns the ID of the named process group
         """
         if name is None:
-            return 0
+            return self.rank
         group = self.group(name)
         if group is None:
-            return 0
+            return self.rank
         else:
             return self._group_ids[name]
 
@@ -157,10 +157,10 @@ class DistributedManager(object):
         Returns the number of subgroups with given name
         """
         if name is None:
-            return 1
+            return self.world_size
         group = self.group(name)
         if group is None:
-            return 1
+            return self.world_size
         else:
             return self._num_groups[name]
 
