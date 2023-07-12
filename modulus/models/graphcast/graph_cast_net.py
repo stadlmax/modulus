@@ -112,10 +112,10 @@ class GraphCastNet(Module):
         for distributed settings, the an instance of the DistributedManager singleton of Modulus
         is intended to be passed on
 
-    expect_partitioned_input : bool, default=True
+    expect_partitioned_input : bool, default=False
         whether one expects the input to be already distributed in a distributed setting
 
-    produce_aggregated_output : bool, default=False
+    produce_aggregated_output : bool, default=True
         whether one expects the model to produce an aggregated output on each rank
 
     Note
@@ -646,6 +646,18 @@ class GraphCastNet(Module):
         )
         return self.prepare_output(outvar, self.produce_aggregated_output)
 
+    def get_aggregate_output_flag(self) -> bool:
+        return self.produce_aggregated_output
+
+    def set_aggregate_output_flag(self, flag: bool):
+        self.produce_aggregated_output = flag
+
+    def get_partitioned_input_flag(self) -> bool:
+        return self.expect_partitioned_input
+
+    def set_partitioned_input_flag(self, flag: bool):
+        self.expect_partitioned_input = flag
+
     def prepare_input(self, invar: Tensor, expect_partitioned_input: bool) -> Tensor:
         """Prepares the input to the model in the required shape.
 
@@ -700,7 +712,9 @@ class GraphCastNet(Module):
             outvar = outvar.view(self.output_dim_grid_nodes, *self.input_res)
             outvar = torch.unsqueeze(outvar, dim=0)
 
-        # else: keep output in shape [N, C] == no-op
+        else:
+            # keep partition of H, W, i.e. produce [N, C, P]
+            outvar = outvar.permute(1, 0).unsqueeze(dim=0)
 
         return outvar
 

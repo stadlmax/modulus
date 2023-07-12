@@ -354,7 +354,7 @@ class DistributedManager(object):
     def create_process_subgroup(subgroup_name: str, subgroup_size: int, verbose: bool = False):
         manager = DistributedManager()
         if not manager.distributed:
-            return None
+            return
 
         assert subgroup_name not in manager._groups, f"Group with name {subgroup_name} already exists" 
 

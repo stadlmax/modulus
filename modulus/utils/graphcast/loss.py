@@ -47,6 +47,7 @@ class CellAreaWeightedLossFunction(nn.Module):
 
         loss = (invar - outvar) ** 2
         loss = loss.mean(dim=(0, 1))
+        print(invar.shape, outvar.shape, loss.shape, self.area.shape)
         loss = torch.mul(loss, self.area)
         loss = loss.mean()
         return loss
