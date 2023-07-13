@@ -693,11 +693,15 @@ class GraphCastNet(Module):
         else:
             # default case: input in the shape [N, C, H, W]
             assert invar.size(0) == 1, "GraphCast does not support batch size > 1"
-  
+
             # concat static data
             if self.has_static_data:
                 invar = torch.concat((invar, self.static_data), dim=1)
-                invar = invar[0].view(self.input_dim_grid_nodes + self.static_data.size(1), -1).permute(1, 0)
+                invar = (
+                    invar[0]
+                    .view(self.input_dim_grid_nodes + self.static_data.size(1), -1)
+                    .permute(1, 0)
+                )
 
             else:
                 invar = invar[0].view(self.input_dim_grid_nodes, -1).permute(1, 0)

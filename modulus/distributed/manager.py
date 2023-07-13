@@ -352,22 +352,25 @@ class DistributedManager(object):
         torch.cuda.empty_cache()
 
     @staticmethod
-    def create_process_subgroup(subgroup_name: str, subgroup_size: int, verbose: bool = False):
+    def create_process_subgroup(
+        subgroup_name: str, subgroup_size: int, verbose: bool = False
+    ):
         manager = DistributedManager()
         if not manager.distributed:
             return
 
-        assert subgroup_name not in manager._groups, f"Group with name {subgroup_name} already exists" 
+        assert (
+            subgroup_name not in manager._groups
+        ), f"Group with name {subgroup_name} already exists"
 
         world_size = dist.get_world_size()
         world_rank = dist.get_rank()
         num_subgroups = world_size // subgroup_size
         manager._num_groups[subgroup_name] = num_subgroups
 
-        assert(
+        assert (
             world_size % subgroup_size == 0
         ), f"Cannot divide world size {world_size} evently into subgroups of size {subgroup_size}"
-
 
         # Create all the sub-groups
         # Note: all ranks in the job need to create all sub-groups in

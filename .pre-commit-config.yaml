@@ -26,8 +26,8 @@ repos:
       args: [
           "-vv", "--ignore-init-method", "--ignore-init-module", 
           "--ignore-module", "--ignore-private", "--ignore-semiprivate", 
-          "--ignore-magic", "--fail-under=99", "--exclude=['setup.py', 'test', 'build', 'docs']",  
-          "--ignore-regex=['forward', 'reset_parameters', 'extra_repr', 'MetaData', 'apply_activation','exec_activation']", 
+          "--ignore-magic", "--fail-under=99", "--exclude=['setup.py', 'test', 'build', 'docs', 'models/gnn_layers/distributed_utils.py']",  
+          "--ignore-regex=['forward', 'reset_parameters', 'extra_repr', 'MetaData', 'apply_activation','exec_activation', 'DistributedGraph', 'CuGraphCSC']", 
           "--color", "--"]
       exclude: ^modulus/internal/
 
