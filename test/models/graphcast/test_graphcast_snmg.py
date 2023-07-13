@@ -114,12 +114,12 @@ def test_distributed_graphcast(
     atol, rtol = tolerances[dtype]
 
     # compare forward, now fully materialize out_multi_gpu to faciliate comparison
+    _B, _C, _N = out_multi_gpu.shape
+    out_multi_gpu = out_multi_gpu.view(_C, _N).permute(1, 0)
     out_multi_gpu = model_multi_gpu.module.m2g_graph.get_global_dst_node_features(
         out_multi_gpu
     )
     out_multi_gpu = out_multi_gpu.permute(1, 0).view(out_single_gpu.shape)
-    # out_single_gpu = out_single_gpu[0].view(model_multi_gpu.module.output_dim_grid_nodes, -1).permute(1, 0)
-    # out_single_gpu = model_multi_gpu.module.m2g_graph.get_dst_node_features_in_partition(out_single_gpu)
     diff = out_single_gpu - out_multi_gpu
     diff = torch.abs(diff)
     mask = diff > atol
@@ -197,12 +197,12 @@ def test_distributed_graphcast(
 
 if __name__ == "__main__":
     DistributedManager.initialize()
-    test_distributed_graphcast(8, torch.float32, True)
-    test_distributed_graphcast(8, torch.bfloat16, True)
-    test_distributed_graphcast(8, torch.float16, True)
-    test_distributed_graphcast(8, torch.float32, False)
-    test_distributed_graphcast(8, torch.bfloat16, False)
-    test_distributed_graphcast(8, torch.float16, False)
-    test_distributed_graphcast(4, torch.float32, True)
-    test_distributed_graphcast(2, torch.float32, True)
+    manager = DistributedManager()
+    assert manager.world_size > 1
+    test_distributed_graphcast(manager.world_size, torch.float32, True)
+    test_distributed_graphcast(manager.world_size, torch.bfloat16, True)
+    test_distributed_graphcast(manager.world_size, torch.float16, True)
+    test_distributed_graphcast(manager.world_size, torch.float32, False)
+    test_distributed_graphcast(manager.world_size, torch.bfloat16, False)
+    test_distributed_graphcast(manager.world_size, torch.float16, False)
     DistributedManager.cleanup()

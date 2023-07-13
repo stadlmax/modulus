@@ -169,11 +169,11 @@ def test_distributed_meshgraphnet(
 
 if __name__ == "__main__":
     DistributedManager.initialize()
-    test_distributed_meshgraphnet(8, torch.float32, False)
-    test_distributed_meshgraphnet(8, torch.float32, True)
-    test_distributed_meshgraphnet(8, torch.float16, False)
-    test_distributed_meshgraphnet(8, torch.bfloat16, False)
-    test_distributed_meshgraphnet(8, torch.bfloat16, True)
-    test_distributed_meshgraphnet(4, torch.float32, False)
-    test_distributed_meshgraphnet(2, torch.float32, False)
+    manager = DistributedManager()
+    assert manager.world_size > 1
+    test_distributed_meshgraphnet(manager.world_size, torch.float32, False)
+    test_distributed_meshgraphnet(manager.world_size, torch.float32, True)
+    test_distributed_meshgraphnet(manager.world_size, torch.float16, False)
+    test_distributed_meshgraphnet(manager.world_size, torch.bfloat16, False)
+    test_distributed_meshgraphnet(manager.world_size, torch.bfloat16, True)
     DistributedManager.cleanup()
