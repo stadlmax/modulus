@@ -160,19 +160,19 @@ class CuGraphCSC:
             return self.dist_graph.get_edge_features_in_partition(global_efeat)
         return global_efeat
 
-    def get_global_src_node_features(self, local_nfeat: torch.Tensor) -> torch.Tensor:
+    def get_global_src_node_features(self, local_nfeat: torch.Tensor, get_on_all_ranks: bool = True) -> torch.Tensor:
         if self.is_distributed:
-            return self.dist_graph.get_global_src_node_features(local_nfeat)
+            return self.dist_graph.get_global_src_node_features(local_nfeat, get_on_all_ranks)
         return local_nfeat
 
-    def get_global_dst_node_features(self, local_nfeat: torch.Tensor) -> torch.Tensor:
+    def get_global_dst_node_features(self, local_nfeat: torch.Tensor, get_on_all_ranks: bool = True) -> torch.Tensor:
         if self.is_distributed:
-            return self.dist_graph.get_global_dst_node_features(local_nfeat)
+            return self.dist_graph.get_global_dst_node_features(local_nfeat, get_on_all_ranks)
         return local_nfeat
 
-    def get_global_edge_features(self, local_efeat: torch.Tensor) -> torch.Tensor:
+    def get_global_edge_features(self, local_efeat: torch.Tensor, get_on_all_ranks: bool = True) -> torch.Tensor:
         if self.is_distributed:
-            return self.dist_graph.get_global_edge_features(local_efeat)
+            return self.dist_graph.get_global_edge_features(local_efeat, get_on_all_ranks)
         return local_efeat
 
     def to(self, *args: Any, **kwargs: Any) -> "CuGraphCSC":

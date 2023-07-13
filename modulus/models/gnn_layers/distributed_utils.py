@@ -45,15 +45,11 @@ def _gatherv_first_dim_fwd(
     dim = tensor.size(1)
     num_global_nodes = sum(sizes)
     group_rank = dist.get_rank(process_group)
-    output = (
-        [
-            torch.empty((size, dim), dtype=tensor.dtype, device=tensor.device)
-            for size in sizes
-        ]
-        if group_rank == 0
-        else None
-    )
-    dist.gather(tensor, output, dst_rank=0, group=process_group)
+    output = [
+        torch.empty((size, dim), dtype=tensor.dtype, device=tensor.device)
+        for size in sizes
+    ]
+    dist.gather(tensor, output if group_rank == 0 else None, dst=0, group=process_group)
     return torch.cat(output, dim=0)
 
 

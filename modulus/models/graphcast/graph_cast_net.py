@@ -179,23 +179,6 @@ class GraphCastNet(Module):
         )
         self.has_static_data = static_dataset_path is not None
 
-        # Get the static data
-        if self.has_static_data:
-            self.static_data = StaticData(
-                static_dataset_path, self.latitudes, self.longitudes
-            ).get()
-            num_static_feat = self.static_data.size(1)
-            input_dim_grid_nodes += num_static_feat
-            if self.is_distributed and expect_partitioned_input:
-                # if input itself is distributed, we also need to distribute static data
-                self.static_data = (
-                    self.static_data[0].view(num_static_feat, -1).permute(1, 0)
-                )
-                self.static_data = self.g2m_graph.get_src_node_features_in_partition(
-                    self.static_data
-                )
-        else:
-            self.static_data = None
         self.input_dim_grid_nodes = input_dim_grid_nodes
         self.output_dim_grid_nodes = output_dim_grid_nodes
         self.input_res = input_res
@@ -282,6 +265,25 @@ class GraphCastNet(Module):
                 self.mesh_ndata = self.mesh_graph.get_dst_node_features_in_partition(
                     self.mesh_ndata
                 )
+
+        # Get the static data
+        if self.has_static_data:
+            self.static_data = StaticData(
+                static_dataset_path, self.latitudes, self.longitudes
+            ).get()
+            num_static_feat = self.static_data.size(1)
+            input_dim_grid_nodes += num_static_feat
+            if self.is_distributed and expect_partitioned_input:
+                # if input itself is distributed, we also need to distribute static data
+                self.static_data = (
+                    self.static_data[0].view(num_static_feat, -1).permute(1, 0)
+                )
+                self.static_data = self.g2m_graph.get_src_node_features_in_partition(
+                    self.static_data
+                )
+                self.static_data = self.static_data.permute(1, 0).unsqueeze(dim=0)
+        else:
+            self.static_data = None
 
         # by default: don't checkpoint at all
         self.model_checkpoint_fn = set_checkpoint_fn(False)
@@ -669,20 +671,24 @@ class GraphCastNet(Module):
         Returns
         -------
         Tensor
-            Reshaped input.
+            Reshaped input.f
         """
-        if expect_partitioned_input:
+        if expect_partitioned_input and self.is_distributed:
+            # partitioned input is [N, C, P] instead of [N, C, H, W]
             if self.has_static_data:
-                # in this case, input is expected to be already of shape [N, C]
                 invar = torch.concat([invar, self.static_data], dim=1)
-
+                invar = invar[0].permute(1, 0)
         else:
             # default case: input in the shape [N, C, H, W]
             assert invar.size(0) == 1, "GraphCast does not support batch size > 1"
+  
             # concat static data
             if self.has_static_data:
                 invar = torch.concat((invar, self.static_data), dim=1)
-            invar = invar[0].view(self.input_dim_grid_nodes, -1).permute(1, 0)
+                invar = invar[0].view(self.input_dim_grid_nodes + self.static_data.size(1), -1).permute(1, 0)
+
+            else:
+                invar = invar[0].view(self.input_dim_grid_nodes, -1).permute(1, 0)
 
             if self.is_distributed:
                 # partition node features
@@ -703,7 +709,7 @@ class GraphCastNet(Module):
         Tensor
             The reshaped output of the model.
         """
-        if produce_aggregated_output:
+        if produce_aggregated_output or not self.is_distributed:
             # default case: output of shape [N, C, H, W]
             if self.is_distributed:
                 outvar = self.m2g_graph.get_global_dst_node_features(outvar)
