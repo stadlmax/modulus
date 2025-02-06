@@ -24,7 +24,12 @@ from torch import Tensor
 
 from modulus.models.gnn_layers.mesh_edge_block import MeshEdgeBlock
 from modulus.models.gnn_layers.mesh_node_block import MeshNodeBlock
-from modulus.models.gnn_layers.utils import CuGraphCSC, set_checkpoint_fn
+from modulus.models.gnn_layers.utils import set_checkpoint_fn
+from modulus.models.gnn_layers.distributed_graph import DistributedGraph
+try:
+    from pylibcugraphops.pytorch import CSC
+except ImportError:
+    CSC = None
 
 
 class GraphCastProcessor(nn.Module):
@@ -166,7 +171,7 @@ class GraphCastProcessor(nn.Module):
         self,
         efeat: Tensor,
         nfeat: Tensor,
-        graph: Union[DGLGraph, CuGraphCSC],
+        graph: Union[DGLGraph, CSC, DistributedGraph],
     ) -> Tensor:
         for segment_start, segment_end in self.checkpoint_segments:
             efeat, nfeat = self.checkpoint_fn(

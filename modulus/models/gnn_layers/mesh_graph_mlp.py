@@ -23,7 +23,7 @@ from dgl import DGLGraph
 from torch import Tensor
 from torch.autograd.function import once_differentiable
 
-from .utils import CuGraphCSC, concat_efeat, sum_efeat
+from .utils import concat_efeat, sum_efeat
 
 try:
     from transformer_engine import pytorch as te
@@ -31,6 +31,14 @@ try:
     te_imported = True
 except ImportError:
     te_imported = False
+    
+from .distributed_graph import DistributedGraph
+
+try:
+    from pylibcugraphops.pytorch import CSC
+except ImportError:
+    CSC = None
+
 
 
 class CustomSiLuLinearAutogradFunction(torch.autograd.Function):
@@ -264,7 +272,7 @@ class MeshGraphEdgeMLPConcat(MeshGraphMLP):
         self,
         efeat: Tensor,
         nfeat: Union[Tensor, Tuple[Tensor]],
-        graph: Union[DGLGraph, CuGraphCSC],
+        graph: Union[DGLGraph, CSC, DistributedGraph],
     ) -> Tensor:
         efeat = concat_efeat(efeat, nfeat, graph)
         efeat = self.model(efeat)
@@ -383,7 +391,7 @@ class MeshGraphEdgeMLPSum(nn.Module):
         self,
         efeat: Tensor,
         nfeat: Union[Tensor, Tuple[Tensor]],
-        graph: Union[DGLGraph, CuGraphCSC],
+        graph: Union[DGLGraph, CSC, DistributedGraph],
     ) -> Tensor:
         """forward pass of the truncated MLP. This uses separate linear layers without
         bias. Bias is added to one MLP, as we sum afterwards. This adds the bias to the
@@ -404,7 +412,7 @@ class MeshGraphEdgeMLPSum(nn.Module):
         self,
         efeat: Tensor,
         nfeat: Union[Tensor, Tuple[Tensor]],
-        graph: Union[DGLGraph, CuGraphCSC],
+        graph: Union[DGLGraph, CSC, DistributedGraph],
     ) -> Tensor:
         """Default forward pass of the truncated MLP."""
         mlp_sum = self.forward_truncated_sum(
@@ -418,7 +426,7 @@ class MeshGraphEdgeMLPSum(nn.Module):
         self,
         efeat: Tensor,
         nfeat: Union[Tensor, Tuple[Tensor]],
-        graph: Union[DGLGraph, CuGraphCSC],
+        graph: Union[DGLGraph, CSC, DistributedGraph],
     ) -> Tensor:
         """Forward pass of the truncated MLP with custom SiLU function."""
         mlp_sum = self.forward_truncated_sum(
@@ -443,7 +451,7 @@ class MeshGraphEdgeMLPSum(nn.Module):
         self,
         efeat: Tensor,
         nfeat: Union[Tensor, Tuple[Tensor]],
-        graph: Union[DGLGraph, CuGraphCSC],
+        graph: Union[DGLGraph, CSC, DistributedGraph],
     ) -> Tensor:
         if self.recompute_activation:
             return self.custom_silu_linear_forward(efeat, nfeat, graph)

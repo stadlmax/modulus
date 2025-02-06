@@ -22,7 +22,13 @@ from dgl import DGLGraph
 from torch import Tensor
 
 from .mesh_graph_mlp import MeshGraphMLP
-from .utils import CuGraphCSC, aggregate_and_concat
+from .utils import aggregate_and_concat
+from .distributed_graph import DistributedGraph
+
+try:
+    from pylibcugraphops.pytorch import CSC
+except ImportError:
+    CSC = None
 
 
 class MeshNodeBlock(nn.Module):
@@ -83,7 +89,7 @@ class MeshNodeBlock(nn.Module):
         self,
         efeat: Tensor,
         nfeat: Tensor,
-        graph: Union[DGLGraph, CuGraphCSC],
+        graph: Union[DGLGraph, CSC, DistributedGraph],
     ) -> Tuple[Tensor, Tensor]:
         # update edge features
         cat_feat = aggregate_and_concat(efeat, nfeat, graph, self.aggregation)

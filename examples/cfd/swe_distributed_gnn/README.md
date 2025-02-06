@@ -160,7 +160,7 @@ follows in a similar fashion.
 <!-- {: .center} -->
 ![Visualization of Distributed Message Passing](figures/dist_message_passing.png)
 
-Most of these distributed primitives are hidden away in the `CuGraphCSC` wrapper class.
+Most of these distributed primitives are hidden away in the `DistributedGraph` wrapper class.
 The following example briefly shows how these would work in a simplified context.
 `GraphCastNet` itself already has been implemented such that its graph use these wrappers
 under the hood which means that the user only has to e.g. specify the name of the process
@@ -171,7 +171,7 @@ methods and classes.
 
 ```python
 from modulus.distributed import DistributedManager
-from modulus.models.gnn_layers import CuGraphCSC
+from modulus.models.gnn_layers import DistributedGraph
 
 ...
 
@@ -186,7 +186,7 @@ dist_manager = DistributedManager()
 ...
 
 # create wrapper graph
-graph = CuGraphCSC.from_dgl(
+graph = DistributedGraph.from_dgl(
     dgl_graph,
     partition_size=graph_partition_pg_size,
     partition_group_name=graph_partition_pg_name,

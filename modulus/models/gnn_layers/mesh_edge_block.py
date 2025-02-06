@@ -22,7 +22,12 @@ from dgl import DGLGraph
 from torch import Tensor
 
 from .mesh_graph_mlp import MeshGraphEdgeMLPConcat, MeshGraphEdgeMLPSum
-from .utils import CuGraphCSC
+from .distributed_graph import DistributedGraph
+
+try:
+    from pylibcugraphops.pytorch import CSC
+except ImportError:
+    CSC = None
 
 
 class MeshEdgeBlock(nn.Module):
@@ -86,7 +91,7 @@ class MeshEdgeBlock(nn.Module):
         self,
         efeat: Tensor,
         nfeat: Tensor,
-        graph: Union[DGLGraph, CuGraphCSC],
+        graph: Union[DGLGraph, CSC, DistributedGraph],
     ) -> Tensor:
         efeat_new = self.edge_mlp(efeat, nfeat, graph)
         efeat_new = efeat_new + efeat

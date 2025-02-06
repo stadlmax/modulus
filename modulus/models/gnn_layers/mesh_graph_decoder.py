@@ -22,7 +22,13 @@ from dgl import DGLGraph
 from torch import Tensor
 
 from .mesh_graph_mlp import MeshGraphEdgeMLPConcat, MeshGraphEdgeMLPSum, MeshGraphMLP
-from .utils import CuGraphCSC, aggregate_and_concat
+from .utils import aggregate_and_concat
+from .distributed_graph import DistributedGraph
+
+try:
+    from pylibcugraphops.pytorch import CSC
+except ImportError:
+    CSC = None
 
 
 class MeshGraphDecoder(nn.Module):
@@ -110,7 +116,7 @@ class MeshGraphDecoder(nn.Module):
         m2g_efeat: Tensor,
         grid_nfeat: Tensor,
         mesh_nfeat: Tensor,
-        graph: Union[DGLGraph, CuGraphCSC],
+        graph: Union[DGLGraph, CSC, DistributedGraph],
     ) -> Tensor:
         # update edge features
         efeat = self.edge_mlp(m2g_efeat, (mesh_nfeat, grid_nfeat), graph)

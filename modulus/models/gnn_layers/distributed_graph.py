@@ -16,10 +16,11 @@
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Union
+from dgl import DGLGraph
 
 import torch
-import torch.distributed as dist
+import dgl
 
 from modulus.distributed import (
     DistributedManager,
@@ -28,6 +29,12 @@ from modulus.distributed import (
     indexed_all_to_all_v,
     scatter_v,
 )
+
+try:
+    from pylibcugraphops.pytorch import CSC
+except ImportError:
+    raise ImportError("WHY")
+    CSC = None
 
 logger = logging.getLogger(__name__)
 
@@ -885,11 +892,11 @@ def partition_graph_by_coordinate_bbox(
 class DistributedGraph:
     def __init__(
         self,
-        global_offsets: torch.Tensor,
-        global_indices: torch.Tensor,
+        graph: Union[DGLGraph, CSC],
         partition_size: int,
-        graph_partition_group_name: str = None,
-        graph_partition: Optional[GraphPartition] = None,
+        graph_partition_group_name: Optional[str] = None,
+        graph_partition: Optional[Union[GraphPartition, str]] = None,
+        **kwargs,
     ):  # pragma: no cover
         """
         Utility Class representing a distributed graph based on a given
@@ -900,14 +907,12 @@ class DistributedGraph:
 
         Parameters
         ----------
-        global_offsets : torch.Tensor
-            CSC offsets, can live on the CPU
-        global_indices : torch.Tensor
-            CSC indices, can live on the CPU
+        graph : DGLGraph | CSC
+            Graph Structure living on CPU or on GPU to be distributed.
         partition_size : int
             Number of process groups across which graphs are distributed, expected to
             be larger than 1, i.e. an actual partition distributed among multiple ranks.
-        partition_group_name : str, default=None
+        graph_partition_group_name : str, optional
             Name of process group across which graphs are distributed. Passing no process
             group name leads to a parallelism across the default process group.
             Otherwise, the group size of a process group is expected to match partition_size.
@@ -915,9 +920,33 @@ class DistributedGraph:
             Optional graph_partition, if passed as None, the naive
             node-wise partitioning scheme will be applied to global_offsets and global_indices,
             otherwise, these will be ignored and the passed partition will be used instead.
+        kwargs:
+            Optional keyword arguments to partitioning routine besides offsets, indices, partition_size,
+            partition_rank, and device. Only needed if partition not passed explicitly.
         """
 
         dist_manager = DistributedManager()
+        
+        if isinstance(graph, DGLGraph):
+            _backend = "DGL"
+
+            if hasattr(graph, "adj_tensors"):
+                offsets, indices, edge_perm = graph.adj_tensors("csc")
+            elif hasattr(graph, "adj_sparse"):
+                offsets, indices, edge_perm = graph.adj_sparse("csc")
+            else:
+                raise ValueError("Passed graph object doesn't support conversion to CSC.")
+            
+            global_offsets = offsets.to(dtype=torch.int64)
+            global_indices = indices.to(dtype=torch.int64)
+            self.edge_perm = edge_perm
+
+        else:
+            _backend = "CSC"
+            self.edge_perm = None
+            global_offsets = graph.offsets.to(dtype=torch.int64)
+            global_indices = graph.indices.to(dtype=torch.int64)
+        
         self.device = dist_manager.device
         self.partition_rank = dist_manager.group_rank(name=graph_partition_group_name)
         self.partition_size = dist_manager.group_size(name=graph_partition_group_name)
@@ -925,15 +954,52 @@ class DistributedGraph:
         if self.partition_size != partition_size:
             raise AssertionError(error_msg)
         self.process_group = dist_manager.group(name=graph_partition_group_name)
+        
+        # enforce that partitioning is happening on cpu
+        global_offsets = global_offsets.to("cpu")
+        global_indices = global_indices.to("cpu")
+        for k, v in kwargs.items():
+            if isinstance(v, torch.Tensor):
+                kwargs[k] = v.to("cpu")
 
-        if graph_partition is None:
+        if graph_partition is None or graph_partition == "nodewise":
             # default partitioning scheme
             self.graph_partition = partition_graph_nodewise(
                 global_offsets,
                 global_indices,
-                self.partition_size,
-                self.partition_rank,
-                self.device,
+                partition_size=self.partition_size,
+                partition_rank=self.partition_rank,
+                device=self.device,
+            )
+            
+        elif graph_partition == "coordinate_box":
+            self.graph_partition = partition_graph_by_coordinate_bbox(
+                global_offsets,
+                global_indices,
+                partition_size=self.partition_size,
+                partition_rank=self.partition_rank,
+                device=self.device,
+                **kwargs,
+            )
+            
+        elif graph_partition == "id_mapping":
+            self.graph_partition = partition_graph_with_id_mapping(
+                global_offsets,
+                global_indices,
+                partition_size=self.partition_size,
+                partition_rank=self.partition_rank,
+                device=self.device,
+                **kwargs,
+            )
+            
+        elif graph_partition == "matrix_decomposition":
+            self.graph_partition = partition_graph_with_matrix_decomposition(
+                global_offsets,
+                global_indices,
+                partition_size=self.partition_size,
+                partition_rank=self.partition_rank,
+                device=self.device,
+                **kwargs,
             )
 
         else:
@@ -956,8 +1022,21 @@ class DistributedGraph:
         msg += f"num_partitioned_dst_nodes={self.graph_partition.num_dst_nodes_in_each_partition[self.graph_partition.partition_rank]}, "
         msg += f"send_sizes={send_sizes}, recv_sizes={recv_sizes})"
         print(msg)
-
-        dist.barrier(self.process_group)
+        
+        if _backend == "CSC":
+            self.local_graph = CSC(
+                self.graph_partition.local_offsets,
+                self.graph_partition.local_indices,
+                self.graph_partition.num_local_src_nodes,
+                is_bipartite=graph.is_bipartite,
+                reverse_graph_bwd=graph.reverse_graph_bwd,
+            )
+        
+        else:
+            self.local_graph = csc_tensors_to_dgl_graph(
+                self.graph_partition.local_offsets,
+                self.graph_partition.local_indices
+            )
 
     def get_src_node_features_in_partition(
         self,
@@ -1195,3 +1274,57 @@ class DistributedGraph:
             self.graph_partition.map_global_edge_ids_to_concatenated_local
         ]
         return global_edge_feat
+    
+    def to(self, *args, **kwargs):
+        self.local_graph.to(*args, **kwargs)
+        self.graph_partition.to(*args, **kwargs)
+        return self
+
+
+def dgl_graph_to_csc(graph: DGLGraph, is_bipartite: bool, reverse_graph_bwd: bool = True, device: torch.device = None): 
+    # DGL changed their APIs w.r.t. how sparse formats can be accessed
+    # this here is done to support both versions
+    if hasattr(graph, "adj_tensors"):
+        offsets, indices, edge_perm = graph.adj_tensors("csc")
+    elif hasattr(graph, "adj_sparse"):
+        offsets, indices, edge_perm = graph.adj_sparse("csc")
+    else:
+        raise ValueError("Passed graph object doesn't support conversion to CSC.")
+
+    n_src_nodes = graph.num_src_nodes()
+
+    device = "cuda" if device is None else device
+    csc = CSC(
+        offsets.to(dtype=torch.int64, device=device),
+        indices.to(dtype=torch.int64, device=device),
+        n_src_nodes,
+        is_bipartite=is_bipartite,
+        reverse_graph_bwd=reverse_graph_bwd,
+    )
+    
+    return csc, edge_perm
+
+
+def csc_tensors_to_dgl_graph(offsets: torch.Tensor, indices: torch.Tensor):
+    graph_offsets = offsets
+    dst_degree = graph_offsets[1:] - graph_offsets[:-1]
+    src_indices = indices
+    dst_indices = torch.arange(
+        0,
+        graph_offsets.size(0) - 1,
+        dtype=graph_offsets.dtype,
+        device=graph_offsets.device,
+    )
+    dst_indices = torch.repeat_interleave(dst_indices, dst_degree, dim=0)
+
+    return dgl.heterograph(
+        {("src", "src2dst", "dst"): ("coo", (src_indices, dst_indices))},
+        idtype=torch.int32,
+    )
+
+
+def csc_to_dgl_graph(graph: CSC):
+    if CSC is not None:
+        return csc_tensors_to_dgl_graph(graph.offsets, graph.indices)
+
+    return graph

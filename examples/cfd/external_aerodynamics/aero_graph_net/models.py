@@ -87,7 +87,7 @@ class AeroGraphNet(mgn.MeshGraphNet):
         self,
         node_features: Tensor,
         edge_features: Tensor,
-        graph: Union[DGLGraph, list[DGLGraph], "CuGraphCSC"],
+        graph: Union[DGLGraph, list[DGLGraph], "CSC"],
         **kwargs,
     ) -> Tensor:
         edge_features = self.edge_encoder(edge_features)

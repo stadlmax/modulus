@@ -173,7 +173,7 @@ def distributed_transpose(tensor, dim0, dim1, group=None, async_op=False):
     return x_recv, req
 
 
-def _reduce(input_, use_fp32=True, group=None):  # pragma: no cover
+def _reduce(input_, use_fp32=True, group=None, async_op=False):  # pragma: no cover
     """All-reduce the input tensor across model parallel group."""
 
     # Bypass the function if we are using only 1 GPU.
@@ -185,10 +185,10 @@ def _reduce(input_, use_fp32=True, group=None):  # pragma: no cover
     if use_fp32 and (input_.dtype.itemsize < 4) and input_.dtype.is_floating_point:
         dtype = input_.dtype
         inputf_ = input_.float()
-        dist.all_reduce(inputf_, group=group)
+        dist.all_reduce(inputf_, group=group, async_op=async_op)
         input_ = inputf_.to(dtype)
     else:
-        dist.all_reduce(input_, group=group)
+        dist.all_reduce(input_, group=group, async_op=async_op)
 
     return input_
 
@@ -724,7 +724,7 @@ def mark_module_as_shared(
         # "The hook should not modify its argument, but it can optionally return a new gradient
         #  which will be used in place of grad."
         # as all_reduce is an in-place operation, need to copy gradient
-        grad = _reduce(grad.clone(), group=group, use_fp32=use_fp32_reduction)
+        grad = _reduce(grad.clone(), group=group, use_fp32=use_fp32_reduction, async_op=True)
         return grad
 
     def hook_post_accum(param: torch.Tensor) -> None:
@@ -732,7 +732,7 @@ def mark_module_as_shared(
         # "Note that, unlike other autograd hooks, this hook operates on the tensor that requires grad
         #  and not the grad itself. The hook can in-place modify and access its Tensor argument,
         # including its .grad field."
-        param.grad = _reduce(param.grad, group=group, use_fp32=use_fp32_reduction)
+        param.grad = _reduce(param.grad, group=group, use_fp32=use_fp32_reduction, async_op=True)
 
     for name, param in module.named_parameters(recurse=recurse):
         error_msg = f"Parameter {name} already marked as having shared weights, can't mark it again!"

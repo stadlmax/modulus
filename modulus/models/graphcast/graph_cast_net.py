@@ -32,10 +32,11 @@ from modulus.models.gnn_layers.embedder import (
     GraphCastDecoderEmbedder,
     GraphCastEncoderEmbedder,
 )
+from modulus.models.gnn_layers.distributed_graph import DistributedGraph, dgl_graph_to_csc
 from modulus.models.gnn_layers.mesh_graph_decoder import MeshGraphDecoder
 from modulus.models.gnn_layers.mesh_graph_encoder import MeshGraphEncoder
 from modulus.models.gnn_layers.mesh_graph_mlp import MeshGraphMLP
-from modulus.models.gnn_layers.utils import CuGraphCSC, set_checkpoint_fn
+from modulus.models.gnn_layers.utils import set_checkpoint_fn
 from modulus.models.layers import get_activation
 from modulus.models.meta import ModelMetaData
 from modulus.models.module import Module
@@ -268,6 +269,7 @@ class GraphCastNet(Module):
         global_features_on_rank_0: bool = False,
         produce_aggregated_output: bool = True,
         produce_aggregated_output_on_all_ranks: bool = True,
+        device=None,
     ):
         super().__init__(meta=MetaData())
 
@@ -307,9 +309,9 @@ class GraphCastNet(Module):
         # construct the graph
         self.graph = Graph(self.lat_lon_grid, mesh_level, multimesh, khop_neighbors)
 
-        self.mesh_graph, self.attn_mask = self.graph.create_mesh_graph(verbose=False)
-        self.g2m_graph = self.graph.create_g2m_graph(verbose=False)
-        self.m2g_graph = self.graph.create_m2g_graph(verbose=False)
+        self.mesh_graph, self.attn_mask = self.graph.create_mesh_graph(verbose=True)
+        self.g2m_graph = self.graph.create_g2m_graph(verbose=True)
+        self.m2g_graph = self.graph.create_m2g_graph(verbose=True)
 
         self.g2m_edata = self.g2m_graph.edata["x"]
         self.m2g_edata = self.m2g_graph.edata["x"]
@@ -322,81 +324,48 @@ class GraphCastNet(Module):
         else:
             raise ValueError(f"Invalid processor type {processor_type}")
 
-        if use_cugraphops_encoder or self.is_distributed:
-            kwargs = {}
-            if use_lat_lon_partitioning:
-                min_seps, max_seps = get_lat_lon_partition_separators(partition_size)
-                kwargs = {
-                    "src_coordinates": self.g2m_graph.srcdata["lat_lon"],
-                    "dst_coordinates": self.g2m_graph.dstdata["lat_lon"],
-                    "coordinate_separators_min": min_seps,
-                    "coordinate_separators_max": max_seps,
-                }
-            self.g2m_graph, edge_perm = CuGraphCSC.from_dgl(
-                graph=self.g2m_graph,
-                partition_size=partition_size,
-                partition_group_name=partition_group_name,
-                partition_by_bbox=use_lat_lon_partitioning,
-                **kwargs,
-            )
-            self.g2m_edata = self.g2m_edata[edge_perm]
-
+        def convert_graph(_graph, _edata, _use_cugraphops, _is_bipartite):
+            torch.cuda.nvtx.range_push("convert_graph")
             if self.is_distributed:
-                self.g2m_edata = self.g2m_graph.get_edge_features_in_partition(
-                    self.g2m_edata
+                graph_partition = "nodewise"
+                if use_lat_lon_partitioning:
+                    min_seps, max_seps = get_lat_lon_partition_separators(partition_size)
+                    kwargs = {
+                        "src_coordinates": _graph.srcdata["lat_lon"],
+                        "dst_coordinates": _graph.dstdata["lat_lon"],
+                        "coordinate_separators_min": min_seps,
+                        "coordinate_separators_max": max_seps,
+                    }
+                    graph_partition = "coordinate_box"
+
+                if _use_cugraphops:
+                    if use_lat_lon_partitioning:
+                        kwargs["src_coordinates"] = _graph.srcdata["lat_lon"].to(device=device)
+                        kwargs["dst_coordinates"] = _graph.dstdata["lat_lon"].to(device=device)
+                    _graph, _eperm = dgl_graph_to_csc(_graph, device=device, is_bipartite=_is_bipartite)
+                
+                _graph = DistributedGraph(
+                    graph=_graph,
+                    partition_size=partition_size,
+                    graph_partition_group_name=partition_group_name,
+                    graph_partition=graph_partition,
+                    **kwargs,
                 )
+                _edata = _edata[_eperm if _use_cugraphops else _graph.edge_perm]
+                _edata = _graph.get_edge_features_in_partition(_edata)
 
-        if use_cugraphops_decoder or self.is_distributed:
-            kwargs = {}
-            if use_lat_lon_partitioning:
-                min_seps, max_seps = get_lat_lon_partition_separators(partition_size)
-                kwargs = {
-                    "src_coordinates": self.m2g_graph.srcdata["lat_lon"],
-                    "dst_coordinates": self.m2g_graph.dstdata["lat_lon"],
-                    "coordinate_separators_min": min_seps,
-                    "coordinate_separators_max": max_seps,
-                }
+            elif _use_cugraphops:
+                _graph, _eperm = dgl_graph_to_csc(_graph, device=device, is_bipartite=_is_bipartite)
+                _edata = _edata[_eperm]
+            torch.cuda.nvtx.range_pop()
+            return _graph, _edata
 
-            self.m2g_graph, edge_perm = CuGraphCSC.from_dgl(
-                graph=self.m2g_graph,
-                partition_size=partition_size,
-                partition_group_name=partition_group_name,
-                partition_by_bbox=use_lat_lon_partitioning,
-                **kwargs,
-            )
-            self.m2g_edata = self.m2g_edata[edge_perm]
+        self.g2m_graph, self.g2m_edata = convert_graph(self.g2m_graph, self.g2m_edata, use_cugraphops_encoder, True)
+        self.m2g_graph, self.m2g_edata = convert_graph(self.m2g_graph, self.m2g_edata, use_cugraphops_decoder, True)
+        self.mesh_graph, self.mesh_edata = convert_graph(self.mesh_graph, self.mesh_edata, use_cugraphops_processor, True)
 
-            if self.is_distributed:
-                self.m2g_edata = self.m2g_graph.get_edge_features_in_partition(
-                    self.m2g_edata
-                )
-
-        if use_cugraphops_processor or self.is_distributed:
-            kwargs = {}
-            if use_lat_lon_partitioning:
-                min_seps, max_seps = get_lat_lon_partition_separators(partition_size)
-                kwargs = {
-                    "src_coordinates": self.mesh_graph.ndata["lat_lon"],
-                    "dst_coordinates": self.mesh_graph.ndata["lat_lon"],
-                    "coordinate_separators_min": min_seps,
-                    "coordinate_separators_max": max_seps,
-                }
-
-            self.mesh_graph, edge_perm = CuGraphCSC.from_dgl(
-                graph=self.mesh_graph,
-                partition_size=partition_size,
-                partition_group_name=partition_group_name,
-                partition_by_bbox=use_lat_lon_partitioning,
-                **kwargs,
-            )
-            self.mesh_edata = self.mesh_edata[edge_perm]
-            if self.is_distributed:
-                self.mesh_edata = self.mesh_graph.get_edge_features_in_partition(
-                    self.mesh_edata
-                )
-                self.mesh_ndata = self.mesh_graph.get_dst_node_features_in_partition(
-                    self.mesh_ndata
-                )
+        if self.is_distributed:
+            self.mesh_ndata = self.mesh_graph.get_dst_node_features_in_partition(self.mesh_ndata)
 
         self.input_dim_grid_nodes = input_dim_grid_nodes
         self.output_dim_grid_nodes = output_dim_grid_nodes
@@ -919,8 +888,8 @@ class GraphCastNet(Module):
         self.mesh_edata = self.mesh_edata.to(*args, **kwargs)
 
         device, _, _, _ = torch._C._nn._parse_to(*args, **kwargs)
-        self.g2m_graph = self.g2m_graph.to(device)
-        self.mesh_graph = self.mesh_graph.to(device)
-        self.m2g_graph = self.m2g_graph.to(device)
+        self.g2m_graph.to(device)
+        self.mesh_graph.to(device)
+        self.m2g_graph.to(device)
 
         return self

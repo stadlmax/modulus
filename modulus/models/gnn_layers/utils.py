@@ -22,20 +22,21 @@ from dgl import DGLGraph
 from torch import Tensor
 from torch.utils.checkpoint import checkpoint
 
-from modulus.models.gnn_layers import CuGraphCSC
+from modulus.models.gnn_layers.distributed_graph import DistributedGraph
 
 try:
+    from pylibcugraphops.pytorch import CSC
     from pylibcugraphops.pytorch.operators import (
         agg_concat_e2n,
-        update_efeat_bipartite_e2e,
-        update_efeat_static_e2e,
+        update_efeat_e2e,
     )
 
     USE_CUGRAPHOPS = True
 
 except ImportError:
-    update_efeat_bipartite_e2e = None
-    update_efeat_static_e2e = None
+    raise ImportError("whut")
+    CSC = None
+    update_efeat_e2e = None
     agg_concat_e2n = None
     USE_CUGRAPHOPS = False
 
@@ -151,7 +152,7 @@ def concat_efeat_dgl(
 def concat_efeat(
     efeat: Tensor,
     nfeat: Union[Tensor, Tuple[Tensor]],
-    graph: Union[DGLGraph, CuGraphCSC],
+    graph: Union[DGLGraph, CSC, DistributedGraph],
 ) -> Tensor:
     """Concatenates edge features with source and destination node features.
     Use for homogeneous graphs.
@@ -162,7 +163,7 @@ def concat_efeat(
         Edge features.
     nfeat : Tensor | Tuple[Tensor]
         Node features.
-    graph : DGLGraph | CuGraphCSC
+    graph : DGLGraph | CSC | DistributedGraph
         Graph.
 
     Returns
@@ -170,63 +171,42 @@ def concat_efeat(
     Tensor
         Concatenated edge features with source and destination node features.
     """
+
+    local_graph = graph
+    src_feat = nfeat if isinstance(nfeat, Tensor) else nfeat[0]
+    if isinstance(graph, DistributedGraph):
+        local_graph = graph.local_graph
+        src_feat = graph.get_src_node_features_in_local_graph(src_feat)
+    
     if isinstance(nfeat, Tensor):
-        if isinstance(graph, CuGraphCSC):
-            if graph.dgl_graph is not None or not USE_CUGRAPHOPS:
-                src_feat, dst_feat = nfeat, nfeat
-                if graph.is_distributed:
-                    src_feat = graph.get_src_node_features_in_local_graph(nfeat)
-                efeat = concat_efeat_dgl(
-                    efeat, (src_feat, dst_feat), graph.to_dgl_graph()
-                )
-
-            else:
-                if graph.is_distributed:
-                    src_feat = graph.get_src_node_features_in_local_graph(nfeat)
-                    # torch.int64 to avoid indexing overflows due tu current behavior of cugraph-ops
-                    bipartite_graph = graph.to_bipartite_csc(dtype=torch.int64)
-                    dst_feat = nfeat
-                    efeat = update_efeat_bipartite_e2e(
-                        efeat, src_feat, dst_feat, bipartite_graph, "concat"
-                    )
-
-                else:
-                    static_graph = graph.to_static_csc()
-                    efeat = update_efeat_static_e2e(
-                        efeat,
-                        nfeat,
-                        static_graph,
-                        mode="concat",
-                        use_source_emb=True,
-                        use_target_emb=True,
-                    )
+        nfeat = src_feat
+        if USE_CUGRAPHOPS and isinstance(local_graph, CSC):
+            res_efeat = update_efeat_e2e(
+                efeat, nfeat, local_graph, mode="concat", use_source_emb=True, use_target_emb=True,
+            )
+        elif isinstance(local_graph, DGLGraph):
+            src, dst = (item.long() for item in local_graph.edges())
+            res_efeat = concat_efeat_dgl(efeat, nfeat, nfeat, src, dst)
 
         else:
-            efeat = concat_efeat_dgl(efeat, nfeat, graph)
+            res_efeat = concat_efeat(efeat, nfeat, local_graph)
 
     else:
-        src_feat, dst_feat = nfeat
-        # update edge features through concatenating edge and node features
-        if isinstance(graph, CuGraphCSC):
-            if graph.dgl_graph is not None or not USE_CUGRAPHOPS:
-                if graph.is_distributed:
-                    src_feat = graph.get_src_node_features_in_local_graph(src_feat)
-                efeat = concat_efeat_dgl(
-                    efeat, (src_feat, dst_feat), graph.to_dgl_graph()
-                )
+        dst_feat = nfeat[1]
 
-            else:
-                if graph.is_distributed:
-                    src_feat = graph.get_src_node_features_in_local_graph(src_feat)
-                # torch.int64 to avoid indexing overflows due tu current behavior of cugraph-ops
-                bipartite_graph = graph.to_bipartite_csc(dtype=torch.int64)
-                efeat = update_efeat_bipartite_e2e(
-                    efeat, src_feat, dst_feat, bipartite_graph, "concat"
-                )
+        if USE_CUGRAPHOPS and isinstance(local_graph, CSC):
+            res_efeat = update_efeat_e2e(
+                efeat, (src_feat, dst_feat), local_graph, mode="concat", use_source_emb=True, use_target_emb=True,
+            )
+
+        elif isinstance(local_graph, DGLGraph):
+            src, dst = (item.long() for item in local_graph.edges())
+            res_efeat = concat_efeat_dgl(efeat, src_feat, dst_feat, src, dst)
+        
         else:
-            efeat = concat_efeat_dgl(efeat, (src_feat, dst_feat), graph)
+            res_efeat = concat_efeat(efeat, (src_feat, dst_feat), local_graph)
 
-    return efeat
+    return res_efeat
 
 
 @torch.jit.script
@@ -260,7 +240,7 @@ def sum_efeat_dgl(
 def sum_efeat(
     efeat: Tensor,
     nfeat: Union[Tensor, Tuple[Tensor]],
-    graph: Union[DGLGraph, CuGraphCSC],
+    graph: Union[DGLGraph, CSC, DistributedGraph],
 ):
     """Sums edge features with source and destination node features.
 
@@ -271,7 +251,7 @@ def sum_efeat(
     nfeat : Tensor | Tuple[Tensor]
         Node features (static setting) or tuple of node features of
         source and destination nodes (bipartite setting).
-    graph : DGLGraph | CuGraphCSC
+    graph : DGLGraph | CSC, DistributedGraph
         The underlying graph.
 
     Returns
@@ -279,59 +259,42 @@ def sum_efeat(
     Tensor
         Sum of edge features with source and destination node features.
     """
+
+    local_graph = graph
+    src_feat = nfeat if isinstance(nfeat, Tensor) else nfeat[0]
+    if isinstance(local_graph, DistributedGraph):
+        local_graph = graph.local_graph
+        src_feat = graph.get_src_node_features_in_local_graph(src_feat)
+
     if isinstance(nfeat, Tensor):
-        if isinstance(graph, CuGraphCSC):
-            if graph.dgl_graph is not None or not USE_CUGRAPHOPS:
-                src_feat, dst_feat = nfeat, nfeat
-                if graph.is_distributed:
-                    src_feat = graph.get_src_node_features_in_local_graph(src_feat)
-
-                src, dst = (item.long() for item in graph.to_dgl_graph().edges())
-                sum_efeat = sum_efeat_dgl(efeat, src_feat, dst_feat, src, dst)
-
-            else:
-                if graph.is_distributed:
-                    src_feat = graph.get_src_node_features_in_local_graph(nfeat)
-                    dst_feat = nfeat
-                    bipartite_graph = graph.to_bipartite_csc()
-                    sum_efeat = update_efeat_bipartite_e2e(
-                        efeat, src_feat, dst_feat, bipartite_graph, mode="sum"
-                    )
-
-                else:
-                    static_graph = graph.to_static_csc()
-                    sum_efeat = update_efeat_bipartite_e2e(
-                        efeat, nfeat, static_graph, mode="sum"
-                    )
+        nfeat = src_feat
+        if USE_CUGRAPHOPS and isinstance(local_graph, CSC):
+            res_efeat = update_efeat_e2e(
+                efeat, nfeat, local_graph, mode="sum", use_source_emb=True, use_target_emb=True,
+            )
+        elif isinstance(local_graph, DGLGraph):
+            src, dst = (item.long() for item in local_graph.edges())
+            res_efeat = sum_efeat_dgl(efeat, nfeat, nfeat, src, dst)
 
         else:
-            src_feat, dst_feat = nfeat, nfeat
-            src, dst = (item.long() for item in graph.edges())
-            sum_efeat = sum_efeat_dgl(efeat, src_feat, dst_feat, src, dst)
+            res_efeat = sum_efeat(efeat, nfeat, local_graph)
 
     else:
-        src_feat, dst_feat = nfeat
-        if isinstance(graph, CuGraphCSC):
-            if graph.dgl_graph is not None or not USE_CUGRAPHOPS:
-                if graph.is_distributed:
-                    src_feat = graph.get_src_node_features_in_local_graph(src_feat)
+        dst_feat = nfeat[1]
 
-                src, dst = (item.long() for item in graph.to_dgl_graph().edges())
-                sum_efeat = sum_efeat_dgl(efeat, src_feat, dst_feat, src, dst)
+        if USE_CUGRAPHOPS and isinstance(local_graph, CSC):
+            res_efeat = update_efeat_e2e(
+                efeat, (src_feat, dst_feat), local_graph, mode="sum", use_source_emb=True, use_target_emb=True,
+            )
 
-            else:
-                if graph.is_distributed:
-                    src_feat = graph.get_src_node_features_in_local_graph(src_feat)
-
-                bipartite_graph = graph.to_bipartite_csc()
-                sum_efeat = update_efeat_bipartite_e2e(
-                    efeat, src_feat, dst_feat, bipartite_graph, mode="sum"
-                )
+        elif isinstance(local_graph, DGLGraph):
+            src, dst = (item.long() for item in local_graph.edges())
+            res_efeat = sum_efeat_dgl(efeat, src_feat, dst_feat, src, dst)
+        
         else:
-            src, dst = (item.long() for item in graph.edges())
-            sum_efeat = sum_efeat_dgl(efeat, src_feat, dst_feat, src, dst)
+            res_efeat = sum_efeat(efeat, (src_feat, dst_feat), local_graph)
 
-    return sum_efeat
+    return res_efeat
 
 
 @torch.jit.ignore()
@@ -381,7 +344,7 @@ def agg_concat_dgl(
 def aggregate_and_concat(
     efeat: Tensor,
     nfeat: Tensor,
-    graph: Union[DGLGraph, CuGraphCSC],
+    graph: Union[DGLGraph, CSC, DistributedGraph],
     aggregation: str,
 ):
     """
@@ -393,7 +356,7 @@ def aggregate_and_concat(
         Edge features.
     nfeat : Tensor
         Node features (destination nodes).
-    graph : DGLGraph
+    graph : DGLGraph | CSC | DistributedGraph
         Graph.
     aggregation : str
         Aggregation method (sum or mean).
@@ -408,20 +371,14 @@ def aggregate_and_concat(
     RuntimeError
         If aggregation method is not sum or mean.
     """
-
-    if isinstance(graph, CuGraphCSC):
-        # in this case, we don't have to distinguish a distributed setting
-        # or the defalt setting as both efeat and nfeat are already
-        # gurantueed to be on the same rank on both cases due to our
-        # partitioning scheme
-
-        if graph.dgl_graph is not None or not USE_CUGRAPHOPS:
-            cat_feat = agg_concat_dgl(efeat, nfeat, graph.to_dgl_graph(), aggregation)
-
-        else:
-            static_graph = graph.to_static_csc()
-            cat_feat = agg_concat_e2n(nfeat, efeat, static_graph, aggregation)
-    else:
+    
+    if USE_CUGRAPHOPS and isinstance(graph, CSC):
+        cat_feat = agg_concat_e2n(nfeat, efeat, graph, aggregation)
+    
+    elif isinstance(graph, DGLGraph):
         cat_feat = agg_concat_dgl(efeat, nfeat, graph, aggregation)
+
+    else:
+        cat_feat = aggregate_and_concat(efeat, nfeat, graph.local_graph, aggregation)
 
     return cat_feat

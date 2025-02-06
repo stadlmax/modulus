@@ -37,7 +37,6 @@ torch.backends.cuda.matmul.allow_tf32 = False
 
 
 def run_test_distributed_meshgraphnet(rank, world_size, dtype, partition_scheme):
-    from modulus.models.gnn_layers.utils import CuGraphCSC
     from modulus.models.meshgraphnet.meshgraphnet import MeshGraphNet
 
     os.environ["RANK"] = f"{rank}"
@@ -102,7 +101,7 @@ def run_test_distributed_meshgraphnet(rank, world_size, dtype, partition_scheme)
     efeat_single_gpu = efeat_single_gpu.to(device=manager.device, dtype=dtype)
     efeat_single_gpu = efeat_single_gpu.requires_grad_(True)
 
-    graph_single_gpu = CuGraphCSC(
+    graph_single_gpu = DistributedGraph(
         offsets.to(manager.device),
         indices.to(manager.device),
         num_nodes,
@@ -164,7 +163,7 @@ def run_test_distributed_meshgraphnet(rank, world_size, dtype, partition_scheme)
     else:
         assert False  # only schemes above are supported
 
-    graph_multi_gpu = CuGraphCSC(
+    graph_multi_gpu = DistributedGraph(
         offsets.to(manager.device),
         indices.to(manager.device),
         num_nodes,

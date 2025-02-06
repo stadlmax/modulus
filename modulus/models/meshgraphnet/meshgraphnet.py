@@ -36,7 +36,7 @@ import modulus  # noqa: F401 for docs
 from modulus.models.gnn_layers.mesh_edge_block import MeshEdgeBlock
 from modulus.models.gnn_layers.mesh_graph_mlp import MeshGraphMLP
 from modulus.models.gnn_layers.mesh_node_block import MeshNodeBlock
-from modulus.models.gnn_layers.utils import CuGraphCSC, set_checkpoint_fn
+from modulus.models.gnn_layers.utils import set_checkpoint_fn
 from modulus.models.layers import get_activation
 from modulus.models.meta import ModelMetaData
 from modulus.models.module import Module
@@ -196,7 +196,7 @@ class MeshGraphNet(Module):
         self,
         node_features: Tensor,
         edge_features: Tensor,
-        graph: Union[DGLGraph, List[DGLGraph], CuGraphCSC],
+        graph: Union[DGLGraph, List[DGLGraph], CSC, DistributedGraph],
         **kwargs,
     ) -> Tensor:
         edge_features = self.edge_encoder(edge_features)
@@ -351,7 +351,7 @@ class MeshGraphNetProcessor(nn.Module):
         self,
         node_features: Tensor,
         edge_features: Tensor,
-        graph: Union[DGLGraph, List[DGLGraph], CuGraphCSC],
+        graph: Union[DGLGraph, List[DGLGraph], CSC, DistributedGraph],
     ) -> Tensor:
         with self.checkpoint_offload_ctx:
             for segment_start, segment_end in self.checkpoint_segments:
