@@ -171,3 +171,7 @@ multirun/
 
 # SLURM
 slurm-*.out
+
+# artefacts
+*.dgl
+*.pt

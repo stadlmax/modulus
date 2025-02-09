@@ -307,7 +307,7 @@ class GraphCastNet(Module):
         activation_fn = get_activation(activation_fn)
 
         # construct the graph
-        self.graph = Graph(self.lat_lon_grid, mesh_level, multimesh, khop_neighbors)
+        self.graph = Graph(self.lat_lon_grid, mesh_level, multimesh, khop_neighbors, cache_graphs=True)
 
         self.mesh_graph, self.attn_mask = self.graph.create_mesh_graph(verbose=True)
         self.g2m_graph = self.graph.create_g2m_graph(verbose=True)

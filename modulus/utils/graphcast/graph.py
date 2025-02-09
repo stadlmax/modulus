@@ -16,6 +16,8 @@
 
 import logging
 
+import os
+import dgl
 import numpy as np
 import torch
 from sklearn.neighbors import NearestNeighbors
@@ -71,14 +73,20 @@ class Graph:
         multimesh: bool = True,
         khop_neighbors: int = 0,
         dtype=torch.float,
+        cache_graphs: bool = False,
     ) -> None:
         self.khop_neighbors = khop_neighbors
         self.dtype = dtype
+        self.cache_graphs = cache_graphs
 
         # flatten lat/lon gird
+        self._lat = lat_lon_grid.size(0)
+        self._lon = lat_lon_grid.size(1)
         self.lat_lon_grid_flat = lat_lon_grid.permute(2, 0, 1).view(2, -1).permute(1, 0)
 
         # create the multi-mesh
+        self.mesh_level = mesh_level
+        self.multimesh = multimesh
         _meshes = get_hierarchy_of_triangular_meshes_for_sphere(splits=mesh_level)
         finest_mesh = _meshes[-1]  # get the last one in the list of meshes
         self.finest_mesh_src, self.finest_mesh_dst = faces_to_edges(finest_mesh.faces)
@@ -122,6 +130,19 @@ class Graph:
         DGLGraph
             Multimesh graph
         """
+        mesh_graph_cache = f"graphcast_mesh_graph_multi{self.multimesh}_level{self.mesh_level}.dgl"
+        mesh_mask_cache = f"graphcast_mesh_mask__multi{self.multimesh}_neigh{self.khop_neighbors}.pt"
+        
+        if self.cache_graphs:
+            if os.path.exists(mesh_graph_cache):
+                mesh_graph = dgl.load_graphs(mesh_graph_cache, idx_list=[0])[0][0]
+         
+                if self.khop_neighbors > 0 and os.path.exists(mesh_mask_cache):
+                    mask = torch.load(mesh_mask_cache)
+                    return mesh_graph, mask
+                elif self.khop_neighbors <= 0:
+                    return mesh_graph, None
+        
         mesh_graph = create_graph(
             self.mesh_src,
             self.mesh_dst,
@@ -147,6 +168,12 @@ class Graph:
             mask = None
         if verbose:
             print("mesh graph:", mesh_graph)
+            
+        if self.cache_graphs:
+            dgl.save_graphs(mesh_graph_cache, mesh_graph)
+            if mask is not None:
+                torch.save(mask, mesh_mask_cache)
+
         return mesh_graph, mask
 
     def create_g2m_graph(self, verbose: bool = True) -> Tensor:
@@ -163,6 +190,9 @@ class Graph:
             Graph2mesh graph.
         """
         # get the max edge length of icosphere with max order
+        g2m_graph_cache = f"graphcast_g2m_graph_{self._lat}x{self._lon}.dgl"
+        if self.cache_graphs and os.path.exists(g2m_graph_cache):
+            return dgl.load_graphs(g2m_graph_cache, idx_list=[0])[0][0]
 
         max_edge_len = max_edge_length(
             self.finest_mesh_vertices, self.finest_mesh_src, self.finest_mesh_dst
@@ -209,6 +239,8 @@ class Graph:
         g2m_graph.edata["x"] = g2m_graph.edata["x"].to(dtype=self.dtype)
         if verbose:
             print("g2m graph:", g2m_graph)
+        if self.cache_graphs:
+            dgl.save_graphs(g2m_graph_cache, g2m_graph)
         return g2m_graph
 
     def create_m2g_graph(self, verbose: bool = True) -> Tensor:
@@ -224,6 +256,10 @@ class Graph:
         DGLGraph
             Mesh2grid graph.
         """
+        m2g_graph_cache = f"graphcast_m2g_graph_{self._lat}x{self._lon}.dgl"
+        if self.cache_graphs and os.path.exists(m2g_graph_cache):
+            return dgl.load_graphs(m2g_graph_cache, idx_list=[0])[0][0]
+
         # create the mesh2grid bipartite graph
         cartesian_grid = latlon2xyz(self.lat_lon_grid_flat)
         face_centroids = get_face_centroids(self.mesh_vertices, self.mesh_faces)
@@ -263,4 +299,6 @@ class Graph:
 
         if verbose:
             print("m2g graph:", m2g_graph)
+        if self.cache_graphs:
+            dgl.save_graphs(m2g_graph_cache, m2g_graph)
         return m2g_graph
