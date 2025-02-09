@@ -117,7 +117,7 @@ def run(
     ).to(
         device=device, dtype=torch.bfloat16
     )
-    
+    return 
     model.train()
     
     if dist_manager.rank == 0:
